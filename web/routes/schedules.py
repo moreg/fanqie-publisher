@@ -3,7 +3,7 @@
 """
 from flask import jsonify, request
 from database.connection import get_session
-from database.models import Schedule
+from database.models import Schedule, Chapter
 from utils.logger import logger
 
 
@@ -20,16 +20,81 @@ def register_routes(api_bp):
         finally:
             db.close()
 
+    @api_bp.route('/schedules/preview', methods=['POST'])
+    def preview_schedule():
+        """预览将发布的章节"""
+        data = request.json
+        book_id = data.get('book_id')
+        publish_mode = data.get('publish_mode', 'chapters')  # chapters 或 words
+        target_value = data.get('target_value', 1)
+
+        if not book_id:
+            return jsonify({"error": "请选择书籍"}), 400
+        if target_value <= 0:
+            return jsonify({"error": "发布数量必须大于0"}), 400
+
+        db = get_session()
+        try:
+            # 获取该书籍未发布的章节（按章节号排序）
+            chapters = db.query(Chapter).filter(
+                Chapter.book_id == book_id,
+                Chapter.status == 'pending'
+            ).order_by(Chapter.chapter_number).all()
+
+            if not chapters:
+                return jsonify({
+                    "preview_chapters": [],
+                    "total_chapters": 0,
+                    "total_words": 0,
+                    "message": "该书籍暂无待发布的章节"
+                })
+
+            preview_chapters = []
+            total_words = 0
+
+            if publish_mode == 'chapters':
+                # 按章节数模式：直接取前 N 章
+                for i, chapter in enumerate(chapters[:target_value]):
+                    preview_chapters.append(chapter.to_dict())
+                    total_words += chapter.word_count or 0
+            else:
+                # 按字数模式：累加直到达到目标字数
+                accumulated_words = 0
+                for chapter in chapters:
+                    if accumulated_words >= target_value:
+                        break
+                    preview_chapters.append(chapter.to_dict())
+                    accumulated_words += chapter.word_count or 0
+                    total_words += chapter.word_count or 0
+
+            return jsonify({
+                "preview_chapters": preview_chapters,
+                "total_chapters": len(preview_chapters),
+                "total_words": total_words,
+                "message": f"将发布 {len(preview_chapters)} 章，共 {total_words} 字"
+            })
+        except Exception as e:
+            logger.error(f"预览失败: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            db.close()
+
     @api_bp.route('/schedules', methods=['POST'])
     def create_schedule():
         """创建调度"""
         data = request.json
         db = get_session()
         try:
+            # 验证书籍存在
+            book_id = data.get('book_id')
+            if not book_id:
+                return jsonify({"error": "请选择书籍"}), 400
+
             schedule = Schedule(
-                book_id=data.get('book_id'),
+                book_id=book_id,
                 cron_expression=data.get('cron_expression', '0 8,20 * * *'),
-                chapters_per_run=data.get('chapters_per_run', 1)
+                publish_mode=data.get('publish_mode', 'chapters'),
+                target_value=data.get('target_value', 1)
             )
             db.add(schedule)
             db.commit()
@@ -55,8 +120,10 @@ def register_routes(api_bp):
                 schedule.is_active = data['is_active']
             if 'cron_expression' in data:
                 schedule.cron_expression = data['cron_expression']
-            if 'chapters_per_run' in data:
-                schedule.chapters_per_run = data['chapters_per_run']
+            if 'publish_mode' in data:
+                schedule.publish_mode = data['publish_mode']
+            if 'target_value' in data:
+                schedule.target_value = data['target_value']
 
             db.commit()
             return jsonify(schedule.to_dict())

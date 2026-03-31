@@ -65,6 +65,20 @@ class AsyncBookManager:
 
         return ""
 
+    def _extract_status_from_name(self, name: str) -> str:
+        """从书名中提取状态"""
+        if not name:
+            return 'unknown'
+        if '已完结' in name:
+            return 'completed'
+        if '已隐藏' in name:
+            return 'hidden'
+        if '已签约' in name:
+            return 'signed'
+        if '连载中' in name:
+            return 'serializing'
+        return 'active'
+
     def _clean_book_name(self, name: str) -> str:
         """清理书名"""
         if not name:
@@ -110,6 +124,7 @@ class AsyncBookManager:
                         "h1, h2, h3, h4, span:first-child"
                     )
                     raw_name = (await name_el.inner_text()).strip() if name_el else ""
+                    status = self._extract_status_from_name(raw_name)
                     name = self._clean_book_name(raw_name)
 
                     if not name:
@@ -143,7 +158,7 @@ class AsyncBookManager:
                         book_id = f"book_{idx}"
                         idx += 1
 
-                    books_dict[name] = {"fanqie_book_id": book_id, "book_name": name}
+                    books_dict[name] = {"fanqie_book_id": book_id, "book_name": name, "book_status": status}
                     logger.info(f"书籍: {name} -> ID: {book_id}")
 
                 except Exception as e:

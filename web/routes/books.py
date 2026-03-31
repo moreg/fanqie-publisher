@@ -61,13 +61,15 @@ def register_routes(api_bp):
                                 fanqie_book_id=book_info.get('fanqie_book_id', ''),
                                 book_name=book_info.get('book_name', ''),
                                 local_folder='',
-                                chapter_pattern=r"第(\d+)章\s+(.+)\.txt"
+                                chapter_pattern=r"第(\d+)章\s+(.+)\.txt",
+                                book_status=book_info.get('book_status', 'active')
                             )
                             db.add(new_book)
                             synced_count += 1
                         else:
-                            # 更新书名
+                            # 更新书名和状态
                             existing.book_name = book_info.get('book_name', existing.book_name)
+                            existing.book_status = book_info.get('book_status', 'active')
 
                     db.commit()
                     logger.info(f"成功同步 {synced_count} 本新书籍到账号 {account_id}")

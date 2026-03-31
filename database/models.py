@@ -51,6 +51,7 @@ class Book(Base):
     book_name = Column(String(200), nullable=False)
     local_folder = Column(Text, nullable=False)
     chapter_pattern = Column(String(200), default=r"第(\d+)章\s+(.+)\.txt")
+    book_status = Column(String(20), default="active")  # active / completed / hidden / signed / serializing
     status = Column(String(20), default="active")  # active / paused / completed
     created_at = Column(DateTime, default=datetime.now)
 
@@ -66,6 +67,7 @@ class Book(Base):
             "book_name": self.book_name,
             "local_folder": self.local_folder,
             "chapter_pattern": self.chapter_pattern,
+            "book_status": self.book_status,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "account_name": self.account.name if self.account else None,
@@ -122,7 +124,8 @@ class Schedule(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     book_id = Column(Integer, ForeignKey("books.id"), nullable=False)
     cron_expression = Column(String(100), nullable=False)  # 如 "0 8,20 * * *"
-    chapters_per_run = Column(Integer, default=1)
+    publish_mode = Column(String(20), default="chapters")  # chapters / words
+    target_value = Column(Integer, default=1)  # 章节数或字数
     is_active = Column(Boolean, default=True)
     last_run = Column(DateTime, nullable=True)
     next_run = Column(DateTime, nullable=True)
@@ -136,7 +139,8 @@ class Schedule(Base):
             "id": self.id,
             "book_id": self.book_id,
             "cron_expression": self.cron_expression,
-            "chapters_per_run": self.chapters_per_run,
+            "publish_mode": self.publish_mode,
+            "target_value": self.target_value,
             "is_active": self.is_active,
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "next_run": self.next_run.isoformat() if self.next_run else None,
