@@ -207,10 +207,11 @@ class AsyncBrowserManager:
         if cookies:
             try:
                 context = await self._browser.new_context(
-                    cookies=cookies,
                     viewport=None,
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
+                # 添加 cookies
+                await context.add_cookies(cookies)
                 context.set_default_timeout(PAGE_LOAD_TIMEOUT)
                 with self._contexts_lock:
                     self._contexts[account_id] = context
@@ -249,7 +250,7 @@ class AsyncBrowserManager:
         return self._run_async(_create())
 
     async def _async_get_account_cookies(self, account_id: int) -> Optional[list]:
-        """从数据库获取账号的cookies"""
+        """从数据库获取账号的cookies，支持字符串格式和JSON格式"""
         try:
             from database.connection import get_session
             from database.models import Account
@@ -258,10 +259,32 @@ class AsyncBrowserManager:
             try:
                 account = db.query(Account).filter_by(id=account_id).first()
                 if account and account.cookies:
-                    cookies = json.loads(account.cookies)
-                    if cookies and len(cookies) > 0:
-                        logger.info(f"从数据库加载账号 {account_id} 的 {len(cookies)} 个 cookies")
-                        return cookies
+                    cookies_str = account.cookies.strip()
+
+                    # 尝试解析为JSON格式（数组）
+                    if cookies_str.startswith('['):
+                        cookies = json.loads(cookies_str)
+                        if cookies and len(cookies) > 0:
+                            logger.info(f"从数据库加载账号 {account_id} 的 {len(cookies)} 个 cookies (JSON格式)")
+                            return cookies
+
+                    # 解析字符串格式的 cookies
+                    # 格式: name=value; name=value; ...
+                    cookies_list = []
+                    for part in cookies_str.split(';'):
+                        part = part.strip()
+                        if '=' in part:
+                            name, value = part.split('=', 1)
+                            cookies_list.append({
+                                "name": name.strip(),
+                                "value": value.strip(),
+                                "domain": ".fanqienovel.com",
+                                "path": "/"
+                            })
+
+                    if cookies_list:
+                        logger.info(f"从数据库加载账号 {account_id} 的 {len(cookies_list)} 个 cookies (字符串格式)")
+                        return cookies_list
             finally:
                 db.close()
         except Exception as e:
