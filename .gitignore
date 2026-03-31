@@ -34,4 +34,13 @@ logs/
 dist/
 build/
 *.egg-info/
-data/
+
+# Test/Debug files
+test_*.py
+debug*.py
+check_*.py
+debug/
+scripts/
+start.bat
+*.bat
+*.png
