@@ -17,6 +17,7 @@ class Account(Base):
     phone = Column(String(20), nullable=True)
     status = Column(String(20), default="inactive")  # active / inactive / session_expired
     session_file = Column(Text, nullable=True)
+    cookies = Column(Text, nullable=True)  # JSON 格式存储 cookie
     last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -31,6 +32,7 @@ class Account(Base):
             "phone": self.phone,
             "status": self.status,
             "session_file": self.session_file,
+            "has_cookies": bool(self.cookies),
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

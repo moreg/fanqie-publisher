@@ -1,0 +1,8 @@
+playwright>=1.40
+flask>=3.0
+flask-cors
+sqlalchemy>=2.0
+apscheduler>=3.10
+chardet
+customtkinter>=5.2
+Pillow>=10.0

@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 import threading
 import queue
 from pathlib import Path
@@ -195,16 +196,35 @@ class AsyncBrowserManager:
         return SESSIONS_DIR / f"{account_id}_state.json"
 
     async def _async_create_context_from_session(self, account_id: int) -> Optional[BrowserContext]:
-        """从已保存的Session创建Context（异步版本）"""
+        """从已保存的Session或Cookie创建Context（异步版本）"""
         # 先确保浏览器已启动
         await self._async_ensure_browser()
 
+        await self._async_close_context(account_id)
+
+        # 优先使用数据库中的 cookies
+        cookies = await self._async_get_account_cookies(account_id)
+        if cookies:
+            try:
+                context = await self._browser.new_context(
+                    cookies=cookies,
+                    viewport=None,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
+                context.set_default_timeout(PAGE_LOAD_TIMEOUT)
+                with self._contexts_lock:
+                    self._contexts[account_id] = context
+                logger.info(f"已从Cookie创建账号 {account_id} 的浏览器Context")
+                return context
+            except Exception as e:
+                logger.error(f"从Cookie创建Context失败 (账号 {account_id}): {e}")
+                return None
+
+        # 备用：使用 session 文件
         session_path = self._get_session_path(account_id)
         if not session_path.exists():
-            logger.warning(f"账号 {account_id} 的Session文件不存在")
+            logger.warning(f"账号 {account_id} 的Session文件和Cookie都不存在")
             return None
-
-        await self._async_close_context(account_id)
 
         try:
             context = await self._browser.new_context(
@@ -227,6 +247,26 @@ class AsyncBrowserManager:
             return await self._async_create_context_from_session(account_id)
 
         return self._run_async(_create())
+
+    async def _async_get_account_cookies(self, account_id: int) -> Optional[list]:
+        """从数据库获取账号的cookies"""
+        try:
+            from database.connection import get_session
+            from database.models import Account
+
+            db = get_session()
+            try:
+                account = db.query(Account).filter_by(id=account_id).first()
+                if account and account.cookies:
+                    cookies = json.loads(account.cookies)
+                    if cookies and len(cookies) > 0:
+                        logger.info(f"从数据库加载账号 {account_id} 的 {len(cookies)} 个 cookies")
+                        return cookies
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"获取账号 cookies 失败 (账号 {account_id}): {e}")
+        return None
 
     async def _async_create_login_context(self, account_id: int) -> tuple[BrowserContext, Browser, Playwright]:
         """创建登录用Context（独立浏览器）"""

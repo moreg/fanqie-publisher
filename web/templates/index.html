@@ -115,7 +115,9 @@
             const [accounts, setAccounts] = React.useState([]);
             const [loading, setLoading] = React.useState(true);
             const [showAdd, setShowAdd] = React.useState(false);
-            const [form, setForm] = React.useState({ name: '', phone: '' });
+            const [editId, setEditId] = React.useState(null);
+            const [form, setForm] = React.useState({ name: '', phone: '', cookies: '' });
+            const [showCookieHelp, setShowCookieHelp] = React.useState(false);
 
             const loadAccounts = () => {
                 setLoading(true);
@@ -130,14 +132,53 @@
 
             const handleAdd = async () => {
                 if (!form.name) return;
+                const payload = {
+                    name: form.name,
+                    phone: form.phone,
+                    cookies: form.cookies || null
+                };
                 await fetch(`${API_BASE}/accounts`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(form)
+                    body: JSON.stringify(payload)
                 });
-                setForm({ name: '', phone: '' });
+                setForm({ name: '', phone: '', cookies: '' });
                 setShowAdd(false);
                 loadAccounts();
+            };
+
+            const handleEdit = (acc) => {
+                setEditId(acc.id);
+                setForm({ name: acc.name, phone: acc.phone || '', cookies: '' });
+                setShowAdd(false);
+            };
+
+            const handleUpdate = async () => {
+                if (!form.name || !editId) return;
+                const payload = {
+                    name: form.name,
+                    phone: form.phone,
+                    cookies: form.cookies || null
+                };
+                await fetch(`${API_BASE}/accounts/${editId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                setForm({ name: '', phone: '', cookies: '' });
+                setEditId(null);
+                loadAccounts();
+            };
+
+            const handleDelete = async (id) => {
+                if (!confirm('确定删除这个账号？')) return;
+                await fetch(`${API_BASE}/accounts/${id}`, { method: 'DELETE' });
+                loadAccounts();
+            };
+
+            const handleCancel = () => {
+                setEditId(null);
+                setForm({ name: '', phone: '', cookies: '' });
             };
 
             if (loading) return <div className="text-gray-500">加载中...</div>;
@@ -146,47 +187,87 @@
                 <div>
                     <div className="flex justify-between items-center mb-4">
                         <span className="text-gray-600">共 {accounts.length} 个账号</span>
-                        <button onClick={() => setShowAdd(!showAdd)}
+                        <button onClick={() => { setShowAdd(!showAdd); setEditId(null); setForm({ name: '', phone: '', cookies: '' }); }}
                             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
                             {showAdd ? '取消' : '+ 添加账号'}
                         </button>
                     </div>
 
-                    {showAdd && (
+                    {(showAdd || editId) && (
                         <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <div className="grid grid-cols-2 gap-4">
-                                <input type="text" placeholder="账号名称" value={form.name}
+                            <div className="grid grid-cols-1 gap-4">
+                                <input type="text" placeholder="账号名称 *" value={form.name}
                                     onChange={e => setForm({...form, name: e.target.value})}
                                     className="px-3 py-2 border border-gray-300 rounded-md text-sm" />
                                 <input type="text" placeholder="手机号(可选)" value={form.phone}
                                     onChange={e => setForm({...form, phone: e.target.value})}
                                     className="px-3 py-2 border border-gray-300 rounded-md text-sm" />
+                                <div>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <label className="text-sm text-gray-600">Cookie (可选)</label>
+                                        <button onClick={() => setShowCookieHelp(!showCookieHelp)}
+                                            className="text-xs text-blue-600 hover:text-blue-800">
+                                            {showCookieHelp ? '收起' : '如何获取?'}
+                                        </button>
+                                    </div>
+                                    <textarea placeholder='[{"name":"cookie_name","value":"cookie_value","domain":".fanqienovel.com",...}]'
+                                        value={form.cookies}
+                                        onChange={e => setForm({...form, cookies: e.target.value})}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
+                                        rows="4" />
+                                    {showCookieHelp && (
+                                        <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-800">
+                                            <p><strong>获取Cookie方法:</strong></p>
+                                            <p>1. 在Chrome/Edge浏览器登录 fanqienovel.com</p>
+                                            <p>2. 按 F12 打开开发者工具</p>
+                                            <p>3. 切换到 Application (应用) 标签</p>
+                                            <p>4. 左侧选择 Cookies → https://fanqienovel.com</p>
+                                            <p>5. 复制所有 cookie 为 JSON 格式</p>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
-                            <button onClick={handleAdd}
-                                className="mt-3 px-4 py-2 bg-green-600 text-white rounded-md text-sm hover:bg-green-700">
-                                确认添加
-                            </button>
+                            <div className="flex gap-2 mt-3">
+                                <button onClick={editId ? handleUpdate : handleAdd}
+                                    className="px-4 py-2 bg-green-600 text-white rounded-md text-sm hover:bg-green-700">
+                                    {editId ? '保存修改' : '确认添加'}
+                                </button>
+                                {(showAdd || editId) && (
+                                    <button onClick={handleCancel}
+                                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded-md text-sm hover:bg-gray-300">
+                                        取消
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     )}
-                    {accounts.length === 0 ? (
-                        <div className="text-gray-400 text-center py-8">暂无账号</div>
-                    ) : (
+                    {accounts.length === 0 && !showAdd && !editId ? (
+                        <div className="text-gray-400 text-center py-8">暂无账号，点击上方按钮添加</div>
+                    ) : accounts.length > 0 ? (
                         <table className="w-full text-sm">
                             <thead>
                                 <tr className="text-left text-gray-500 border-b">
                                     <th className="pb-2">ID</th>
                                     <th className="pb-2">名称</th>
                                     <th className="pb-2">手机号</th>
+                                    <th className="pb-2">Cookie</th>
                                     <th className="pb-2">状态</th>
-                                    <th className="pb-2">最后登录</th>
+                                    <th className="pb-2">操作</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {accounts.map(acc => (
-                                    <tr key={acc.id} className="border-b border-gray-100">
+                                    <tr key={acc.id} className="border-b border-gray-100 hover:bg-gray-50">
                                         <td className="py-3">{acc.id}</td>
                                         <td className="py-3">{acc.name}</td>
                                         <td className="py-3">{acc.phone || '-'}</td>
+                                        <td className="py-3">
+                                            {acc.has_cookies ? (
+                                                <span className="px-2 py-1 rounded text-xs bg-green-100 text-green-700">已配置</span>
+                                            ) : (
+                                                <span className="px-2 py-1 rounded text-xs bg-gray-100 text-gray-500">未配置</span>
+                                            )}
+                                        </td>
                                         <td className="py-3">
                                             <span className={`px-2 py-1 rounded text-xs ${
                                                 acc.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
@@ -194,12 +275,21 @@
                                                 {acc.status === 'active' ? '已登录' : '未登录'}
                                             </span>
                                         </td>
-                                        <td className="py-3 text-gray-500">{acc.last_login || '从未登录'}</td>
+                                        <td className="py-3">
+                                            <button onClick={() => handleEdit(acc)}
+                                                className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 mr-1">
+                                                编辑
+                                            </button>
+                                            <button onClick={() => handleDelete(acc.id)}
+                                                className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">
+                                                删除
+                                            </button>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
-                    )}
+                    ) : null}
                 </div>
             );
         }
