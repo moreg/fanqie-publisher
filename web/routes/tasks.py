@@ -13,12 +13,27 @@ def register_routes(api_bp):
 
     @api_bp.route('/tasks', methods=['GET'])
     def get_tasks():
-        """获取待发布任务"""
+        """获取待发布任务（只返回pending和publishing状态）"""
+        db = get_session()
+        try:
+            # 只获取 pending 和 publishing 状态的任务
+            tasks = db.query(PendingTask).filter(
+                PendingTask.status.in_(['pending', 'publishing'])
+            ).order_by(
+                PendingTask.scheduled_time
+            ).all()
+            return jsonify([t.to_dict() for t in tasks])
+        finally:
+            db.close()
+
+    @api_bp.route('/tasks/all', methods=['GET'])
+    def get_all_tasks():
+        """获取所有任务（包括已发布的）"""
         db = get_session()
         try:
             tasks = db.query(PendingTask).order_by(
-                PendingTask.scheduled_time
-            ).all()
+                PendingTask.scheduled_time.desc()
+            ).limit(100).all()
             return jsonify([t.to_dict() for t in tasks])
         finally:
             db.close()
