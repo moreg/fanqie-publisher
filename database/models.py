@@ -199,8 +199,10 @@ class PendingTask(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False)
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=True)  # 番茄网站章节ID，可为空
     book_id = Column(Integer, ForeignKey("books.id"), nullable=False)  # 冗余字段，方便查询
+    chapter_file = Column(Text, nullable=True)  # 本地文件路径
+    chapter_title = Column(String(200), nullable=True)  # 本地章节标题
     scheduled_time = Column(DateTime, nullable=False)  # 计划发布时间
     status = Column(String(20), default="pending")  # pending / publishing / published / cancelled / retry_pending
     notes = Column(Text, nullable=True)  # 备注
@@ -216,6 +218,8 @@ class PendingTask(Base):
             "id": self.id,
             "chapter_id": self.chapter_id,
             "book_id": self.book_id,
+            "chapter_file": self.chapter_file,
+            "chapter_title": self.chapter_title or (self.chapter.chapter_title if self.chapter else None),
             "scheduled_time": self.scheduled_time.isoformat() if self.scheduled_time else None,
             "status": self.status,
             "notes": self.notes,
@@ -223,7 +227,6 @@ class PendingTask(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             # 关联信息
-            "chapter_title": self.chapter.chapter_title if self.chapter else None,
             "chapter_number": self.chapter.chapter_number if self.chapter else None,
             "book_name": self.book.book_name if self.book else (self.chapter.book.book_name if self.chapter and self.chapter.book else None),
             "account_id": self.book.account_id if self.book else (self.chapter.book.account_id if self.chapter and self.chapter.book else None),

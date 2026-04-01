@@ -15,6 +15,92 @@
     <script type="text/babel">
         const API_BASE = '/api';
 
+        // 确认弹窗组件
+        function ConfirmDialog() {
+            const [dialog, setDialog] = React.useState(null);
+
+            React.useEffect(() => {
+                window.showConfirm = (message, onConfirm, onCancel) => {
+                    setDialog({ message, onConfirm: onConfirm || (() => {}), onCancel: onCancel || (() => {}) });
+                };
+            }, []);
+
+            if (!dialog) return null;
+
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center">
+                    <div className="absolute inset-0 bg-black bg-opacity-50" onClick={() => { dialog.onCancel(); setDialog(null); }}></div>
+                    <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+                        <div className="p-6">
+                            <div className="flex items-center gap-4 mb-4">
+                                <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center">
+                                    <span className="text-2xl">⚠️</span>
+                                </div>
+                                <div className="flex-1">
+                                    <h3 className="text-lg font-semibold text-gray-800">确认操作</h3>
+                                    <p className="text-gray-500 text-sm mt-1">{dialog.message}</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="bg-gray-50 px-6 py-4 flex justify-end gap-3">
+                            <button onClick={() => { dialog.onCancel(); setDialog(null); }}
+                                className="px-4 py-2 text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors">
+                                取消
+                            </button>
+                            <button onClick={() => { dialog.onConfirm(); setDialog(null); }}
+                                className="px-4 py-2 text-white bg-red-500 rounded-lg hover:bg-red-600 transition-colors">
+                                确认删除
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Toast 提示组件
+        function Toast() {
+            const [toasts, setToasts] = React.useState([]);
+
+            React.useEffect(() => {
+                window.showToast = (message, type = 'info', duration = 3000) => {
+                    const id = Date.now();
+                    setToasts(prev => [...prev, { id, message, type }]);
+                    setTimeout(() => {
+                        setToasts(prev => prev.filter(t => t.id !== id));
+                    }, duration);
+                };
+            }, []);
+
+            const getStyles = (type) => {
+                switch(type) {
+                    case 'success': return 'bg-green-500 text-white';
+                    case 'error': return 'bg-red-500 text-white';
+                    case 'warning': return 'bg-yellow-500 text-white';
+                    default: return 'bg-blue-500 text-white';
+                }
+            };
+
+            const getIcon = (type) => {
+                switch(type) {
+                    case 'success': return '✓';
+                    case 'error': return '✕';
+                    case 'warning': return '⚠';
+                    default: return 'ℹ';
+                }
+            };
+
+            return (
+                <div className="fixed top-4 right-4 z-50 space-y-2">
+                    {toasts.map(toast => (
+                        <div key={toast.id} className={`${getStyles(toast.type)} px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 min-w-64 animate-slide-in`}>
+                            <span className="text-lg">{getIcon(toast.type)}</span>
+                            <span className="flex-1">{toast.message}</span>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
         function App() {
             const [currentPage, setCurrentPage] = React.useState('dashboard');
             const [stats, setStats] = React.useState({});
@@ -28,6 +114,8 @@
 
             return (
                 <div className="min-h-screen bg-gray-100">
+                    <Toast />
+                    <ConfirmDialog />
                     {/* 顶部导航 */}
                     <div className="bg-white shadow-sm border-b border-gray-200">
                         <div className="max-w-7xl mx-auto px-4 py-4">
@@ -177,9 +265,11 @@
             };
 
             const handleDelete = async (id) => {
-                if (!confirm('确定删除这个账号？')) return;
-                await fetch(`${API_BASE}/accounts/${id}`, { method: 'DELETE' });
-                loadAccounts();
+                window.showConfirm('确定删除这个账号？', async () => {
+                    await fetch(`${API_BASE}/accounts/${id}`, { method: 'DELETE' });
+                    loadAccounts();
+                    window.showToast('删除成功', 'success');
+                });
             };
 
             const handleCancel = () => {
@@ -302,72 +392,184 @@
         }
 
         function Books() {
-            const [books, setBooks] = React.useState([]);
+            const [localBooks, setLocalBooks] = React.useState([]);
             const [accounts, setAccounts] = React.useState([]);
-            const [fanqieBooks, setFanqieBooks] = React.useState([]);
             const [loading, setLoading] = React.useState(true);
+            const [expandedBooks, setExpandedBooks] = React.useState({});
             const [showAdd, setShowAdd] = React.useState(false);
-            const [form, setForm] = React.useState({ account_id: '', selected_fanqie_book: '', local_folder: '' });
+            const [form, setForm] = React.useState({ book_name: '', account_id: '', local_folder: '' });
+            const [publishModal, setPublishModal] = React.useState(null);
 
             const loadData = () => {
                 setLoading(true);
                 Promise.all([
-                    fetch(`${API_BASE}/books`).then(r => r.json()),
+                    fetch(`${API_BASE}/local-books`).then(r => r.json()),
                     fetch(`${API_BASE}/accounts`).then(r => r.json())
                 ]).then(([booksData, accountsData]) => {
-                    setBooks(Array.isArray(booksData) ? booksData : (booksData.books || []));
+                    if (Array.isArray(booksData)) setLocalBooks(booksData);
+                    else setLocalBooks([]);
                     setAccounts(Array.isArray(accountsData) ? accountsData : (accountsData.accounts || []));
                 }).catch(() => {
-                    setBooks([]);
+                    setLocalBooks([]);
                     setAccounts([]);
                 }).finally(() => setLoading(false));
             };
 
-            // 选择账号后，加载该账号的番茄书籍
-            const handleAccountChange = (accountId) => {
-                setForm({ account_id: accountId, selected_fanqie_book: '', local_folder: '' });
-                if (accountId) {
-                    // 从已有书籍中筛选该账号的番茄书籍
-                    const accBooks = books.filter(b => b.account_id == accountId);
-                    setFanqieBooks(accBooks);
-                } else {
-                    setFanqieBooks([]);
-                }
+            React.useEffect(() => { loadData(); }, []);
+
+            const toggleBook = (bookId) => {
+                setExpandedBooks(prev => ({ ...prev, [bookId]: !prev[bookId] }));
             };
 
-            // 选择番茄书籍后，自动填充信息
-            const handleFanqieBookChange = (fanqieBookId) => {
-                setForm(prev => ({ ...prev, selected_fanqie_book: fanqieBookId }));
+            const handlePublish = (book, chapter) => {
+                setPublishModal({ book, chapter });
+            };
+
+            const handlePublishNow = async () => {
+                if (!publishModal) return;
+
+                // 获取最近的待发布时间，确保与最近任务间隔至少3分钟
+                let scheduledDate = new Date();
+                scheduledDate.setMinutes(scheduledDate.getMinutes() + 1);
+
+                try {
+                    const response = await fetch(`${API_BASE}/tasks`);
+                    const tasks = await response.json();
+                    if (Array.isArray(tasks)) {
+                        const now = new Date();
+                        const threeMinutesLater = new Date(now.getTime() + 3 * 60 * 1000);
+
+                        // 找出最近的任务时间
+                        let nearestTaskTime = null;
+                        for (const task of tasks) {
+                            if (task.status === 'pending' || task.status === 'publishing') {
+                                const taskTime = new Date(task.scheduled_time);
+                                if (taskTime > now && taskTime < threeMinutesLater) {
+                                    if (!nearestTaskTime || taskTime > nearestTaskTime) {
+                                        nearestTaskTime = taskTime;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 如果有任务在3分钟内，将新任务设为最近任务+3分钟
+                        if (nearestTaskTime) {
+                            scheduledDate = new Date(nearestTaskTime.getTime() + 3 * 60 * 1000);
+                            window.showToast('与最近任务间隔太近，已调整到3分钟后', 'warning');
+                        }
+                    }
+                } catch (e) {
+                    console.error('获取任务列表失败:', e);
+                }
+
+                const pad = n => n.toString().padStart(2, '0');
+                const localISO = `${scheduledDate.getFullYear()}-${pad(scheduledDate.getMonth()+1)}-${pad(scheduledDate.getDate())}T${pad(scheduledDate.getHours())}:${pad(scheduledDate.getMinutes())}:${pad(scheduledDate.getSeconds())}`;
+
+                await fetch(`${API_BASE}/tasks`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        book_id: publishModal.book.id,
+                        chapter_file: publishModal.chapter.file_path,
+                        chapter_title: publishModal.chapter.chapter_title,
+                        scheduled_time: localISO
+                    })
+                });
+                setPublishModal(null);
+                window.showToast('已添加到待发布队列', 'success');
+            };
+
+            const handlePublishAtTime = async (time) => {
+                if (!publishModal || !time) return;
+
+                // 检查与最近任务的间隔
+                let finalTime = time;
+
+                try {
+                    const response = await fetch(`${API_BASE}/tasks`);
+                    const tasks = await response.json();
+                    if (Array.isArray(tasks)) {
+                        const selectedTime = new Date(time);
+                        const now = new Date();
+
+                        // 找出最近的任务时间
+                        let nearestTaskTime = null;
+                        for (const task of tasks) {
+                            if (task.status === 'pending' || task.status === 'publishing') {
+                                const taskTime = new Date(task.scheduled_time);
+                                const diff = Math.abs(taskTime.getTime() - selectedTime.getTime());
+                                if (diff < 3 * 60 * 1000) { // 3分钟
+                                    if (!nearestTaskTime || diff < Math.abs(nearestTaskTime.getTime() - selectedTime.getTime())) {
+                                        nearestTaskTime = taskTime;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 如果与最近任务间隔不足3分钟，调整到+3分钟
+                        if (nearestTaskTime) {
+                            const nearestDiff = Math.abs(nearestTaskTime.getTime() - selectedTime.getTime());
+                            if (nearestDiff < 3 * 60 * 1000) {
+                                const newTime = new Date(nearestTaskTime.getTime() + 3 * 60 * 1000);
+                                const pad = n => n.toString().padStart(2, '0');
+                                finalTime = `${newTime.getFullYear()}-${pad(newTime.getMonth()+1)}-${pad(newTime.getDate())}T${pad(newTime.getHours())}:${pad(newTime.getMinutes())}:${pad(newTime.getSeconds())}`;
+                                window.showToast('与最近任务间隔太近，已调整到3分钟后', 'warning');
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('获取任务列表失败:', e);
+                }
+
+                await fetch(`${API_BASE}/tasks`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        book_id: publishModal.book.id,
+                        chapter_file: publishModal.chapter.file_path,
+                        chapter_title: publishModal.chapter.chapter_title,
+                        scheduled_time: finalTime
+                    })
+                });
+                setPublishModal(null);
+                window.showToast('已添加到待发布队列', 'success');
             };
 
             const handleAdd = async () => {
-                if (!form.account_id || !form.selected_fanqie_book || !form.local_folder) {
-                    alert('请填写完整信息');
-                    return;
-                };
-
-                // 找到选中的番茄书籍信息
-                const fanqieBook = fanqieBooks.find(b => b.id == form.selected_fanqie_book);
-                if (!fanqieBook) {
-                    alert('请选择番茄书籍');
+                if (!form.book_name || !form.account_id || !form.local_folder) {
+                    window.showToast('请填写完整信息', 'warning');
                     return;
                 }
-
                 await fetch(`${API_BASE}/books`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         account_id: parseInt(form.account_id),
-                        book_name: fanqieBook.book_name,
-                        fanqie_book_id: fanqieBook.fanqie_book_id,
-                        local_folder: form.local_folder,
-                        chapter_pattern: fanqieBook.chapter_pattern || "第(\\d+)章\\s+(.+)\\.txt"
+                        book_name: form.book_name,
+                        fanqie_book_id: '',
+                        local_folder: form.local_folder
                     })
                 });
-                setForm({ account_id: '', selected_fanqie_book: '', local_folder: '' });
-                setFanqieBooks([]);
+                setForm({ book_name: '', account_id: '', local_folder: '' });
                 setShowAdd(false);
                 loadData();
+                window.showToast('添加成功', 'success');
+            };
+
+            const handleDelete = async (bookId) => {
+                window.showConfirm('确定删除这本书籍？', async () => {
+                    await fetch(`${API_BASE}/books/${bookId}`, { method: 'DELETE' });
+                    loadData();
+                    window.showToast('删除成功', 'success');
+                });
+            };
+
+            const activeBooks = localBooks.filter(b => b.exists);
+            const errorBooks = localBooks.filter(b => !b.exists);
+
+            // 计算每本书的待发布章节数
+            const getPendingCount = (book) => {
+                return book.chapters.filter(ch => ch.publish_status !== 'published').length;
             };
 
             if (loading) return <div className="text-gray-500">加载中...</div>;
@@ -375,7 +577,13 @@
             return (
                 <div>
                     <div className="flex justify-between items-center mb-4">
-                        <span className="text-gray-600">共 {books.length} 本书籍</span>
+                        <div className="flex items-center gap-3">
+                            <span className="text-gray-600">共 {activeBooks.length} 本本地书籍</span>
+                            <button onClick={() => loadData()}
+                                className="px-3 py-1 text-gray-600 bg-gray-100 rounded-md text-sm hover:bg-gray-200 flex items-center gap-1">
+                                <span>↻</span> 刷新
+                            </button>
+                        </div>
                         <button onClick={() => setShowAdd(!showAdd)}
                             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
                             {showAdd ? '取消' : '+ 添加书籍'}
@@ -383,44 +591,47 @@
                     </div>
 
                     {showAdd && (
-                        <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <h3 className="font-medium text-gray-700 mb-4">添加本地书籍</h3>
                             <div className="grid grid-cols-2 gap-4">
-                                <select value={form.account_id}
-                                    onChange={e => handleAccountChange(e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 rounded-md text-sm">
-                                    <option value="">选择账号</option>
-                                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                                </select>
-                                <select value={form.selected_fanqie_book}
-                                    onChange={e => handleFanqieBookChange(e.target.value)}
-                                    disabled={!form.account_id}
-                                    className="px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100">
-                                    <option value="">选择番茄书籍</option>
-                                    {fanqieBooks.map(b => <option key={b.id} value={b.id}>{b.book_name}</option>)}
-                                </select>
-                            </div>
-                            <div className="mt-4 flex gap-2">
-                                <input type="text" placeholder="本地文件夹路径" value={form.local_folder}
-                                    onChange={e => setForm({...form, local_folder: e.target.value})}
-                                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm" />
-                                <label className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md text-sm hover:bg-gray-200 cursor-pointer flex items-center">
-                                    浏览
-                                    <input
-                                        type="file"
-                                        className="hidden"
-                                        webkitdirectory=""
-                                        onChange={e => {
-                                            if (e.target.files && e.target.files.length > 0) {
-                                                const file = e.target.files[0];
-                                                if (file.webkitRelativePath) {
-                                                    const parts = file.webkitRelativePath.split('/');
-                                                    parts.pop();
-                                                    setForm({...form, local_folder: parts.join('/')});
-                                                }
-                                            }
-                                        }}
-                                    />
-                                </label>
+                                <div>
+                                    <label className="block text-sm text-gray-600 mb-1">账号</label>
+                                    <select value={form.account_id}
+                                        onChange={e => setForm({...form, account_id: e.target.value})}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                                        <option value="">选择账号</option>
+                                        {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm text-gray-600 mb-1">书名</label>
+                                    <input type="text" placeholder="输入书名" value={form.book_name}
+                                        onChange={e => setForm({...form, book_name: e.target.value})}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" />
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-sm text-gray-600 mb-1">本地文件夹路径</label>
+                                    <div className="flex gap-2">
+                                        <input type="text" placeholder="选择或输入本地文件夹路径" value={form.local_folder}
+                                            onChange={e => setForm({...form, local_folder: e.target.value})}
+                                            className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm" />
+                                        <label className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md text-sm hover:bg-gray-200 cursor-pointer flex items-center">
+                                            浏览
+                                            <input type="file" className="hidden" webkitdirectory=""
+                                                onChange={e => {
+                                                    if (e.target.files && e.target.files.length > 0) {
+                                                        const file = e.target.files[0];
+                                                        if (file.webkitRelativePath) {
+                                                            const parts = file.webkitRelativePath.split('/');
+                                                            parts.pop();
+                                                            setForm({...form, local_folder: parts.join('/')});
+                                                        }
+                                                    }
+                                                }}
+                                            />
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                             <button onClick={handleAdd}
                                 className="mt-4 px-4 py-2 bg-green-600 text-white rounded-md text-sm hover:bg-green-700">
@@ -428,37 +639,156 @@
                             </button>
                         </div>
                     )}
-                    {books.length === 0 ? (
-                        <div className="text-gray-400 text-center py-8">暂无书籍</div>
+
+                    {localBooks.length === 0 ? (
+                        <div className="text-gray-400 text-center py-8">
+                            暂无本地书籍<br/>
+                            <span className="text-sm">请在"番茄书籍"页面选择书籍并设置本地文件夹路径</span>
+                        </div>
                     ) : (
-                        <table className="w-full text-sm">
-                            <thead>
-                                <tr className="text-left text-gray-500 border-b">
-                                    <th className="pb-2">ID</th>
-                                    <th className="pb-2">书名</th>
-                                    <th className="pb-2">账号</th>
-                                    <th className="pb-2">番茄ID</th>
-                                    <th className="pb-2">状态</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {books.map(book => (
-                                    <tr key={book.id} className="border-b border-gray-100">
-                                        <td className="py-3">{book.id}</td>
-                                        <td className="py-3">{book.book_name}</td>
-                                        <td className="py-3">{book.account_name}</td>
-                                        <td className="py-3 text-gray-500">{book.fanqie_book_id || '-'}</td>
-                                        <td className="py-3">
-                                            <span className={`px-2 py-1 rounded text-xs ${
-                                                book.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                                            }`}>
-                                                {book.status === 'active' ? '正常' : '停用'}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                        <div className="space-y-4">
+                            {activeBooks.map(book => {
+                                const pendingCount = getPendingCount(book);
+                                return (
+                                <div key={book.id} className="border border-gray-200 rounded-lg overflow-hidden">
+                                    <div className="bg-gray-50 px-4 py-3 flex items-center justify-between">
+                                        <div className="flex-1 cursor-pointer hover:bg-gray-100" onClick={() => toggleBook(book.id)}>
+                                            <div className="font-medium text-gray-800">{book.book_name}</div>
+                                            <div className="text-sm text-gray-500 mt-1">
+                                                <span className="mr-4">📁 {book.local_folder}</span>
+                                                <span className="mr-4">📖 {book.total_chapters} 章</span>
+                                                <span className="mr-4">✍️ {book.total_words.toLocaleString()} 字</span>
+                                                {pendingCount < book.total_chapters && (
+                                                    <span className="text-orange-600">待发布: {pendingCount} 章</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={() => handleDelete(book.id)}
+                                                className="px-3 py-1 text-xs bg-red-100 text-red-600 rounded hover:bg-red-200">
+                                                删除
+                                            </button>
+                                            <span className="text-gray-400">{expandedBooks[book.id] ? '▲' : '▼'}</span>
+                                        </div>
+                                    </div>
+                                    {expandedBooks[book.id] && (
+                                        <div className="border-t border-gray-200">
+                                            {book.chapters.filter(ch => ch.publish_status !== 'published').length === 0 ? (
+                                                <div className="p-4 text-gray-400 text-center">所有章节已发布完成</div>
+                                            ) : (
+                                                <div className="max-h-96 overflow-y-auto">
+                                                    {book.chapters
+                                                        .filter(ch => ch.publish_status !== 'published')
+                                                        .map((ch, idx) => (
+                                                        <div key={idx} className="px-4 py-2 border-b border-gray-100 last:border-b-0 hover:bg-gray-50">
+                                                            <div className="flex items-center justify-between">
+                                                                <div className="flex-1">
+                                                                    <span className="text-blue-600 font-medium">{ch.chapter_title}</span>
+                                                                    <span className="text-sm text-gray-400 ml-3">第{ch.chapter_number}章 · {ch.word_count.toLocaleString()}字</span>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    {ch.publish_status === 'published' && (
+                                                                        <span className="px-3 py-1 text-xs bg-green-100 text-green-600 rounded-full">
+                                                                            已发布
+                                                                        </span>
+                                                                    )}
+                                                                    {ch.publish_status === 'pending' && (
+                                                                        <span className="px-3 py-1 text-xs bg-yellow-100 text-yellow-600 rounded-full">
+                                                                            待发布
+                                                                        </span>
+                                                                    )}
+                                                                    {ch.publish_status === 'failed' && (
+                                                                        <button onClick={() => handlePublish(book, ch)}
+                                                                            className="px-3 py-1 text-xs bg-red-100 text-red-600 rounded hover:bg-red-200">
+                                                                            重新发布
+                                                                        </button>
+                                                                    )}
+                                                                    {ch.publish_status === 'none' && (
+                                                                        <button onClick={() => handlePublish(book, ch)}
+                                                                            className="px-3 py-1 text-xs bg-blue-100 text-blue-600 rounded hover:bg-blue-200">
+                                                                            发布
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                );
+                            })}
+
+                            {errorBooks.length > 0 && (
+                                <div className="mt-6">
+                                    <div className="text-sm text-gray-500 mb-2 font-medium">⚠️ 无法访问的书籍</div>
+                                    {errorBooks.map(book => (
+                                        <div key={book.id} className="border border-red-200 rounded-lg p-3 mb-2 bg-red-50 flex items-center justify-between">
+                                            <div>
+                                                <div className="font-medium text-gray-700">{book.book_name}</div>
+                                                <div className="text-sm text-red-500 mt-1">{book.error}</div>
+                                            </div>
+                                            <button onClick={() => handleDelete(book.id)}
+                                                className="px-3 py-1 text-xs bg-red-100 text-red-600 rounded hover:bg-red-200">
+                                                删除
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* 发布弹窗 */}
+                    {publishModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center">
+                            <div className="absolute inset-0 bg-black bg-opacity-50" onClick={() => setPublishModal(null)}></div>
+                            <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+                                <div className="p-6">
+                                    <h3 className="text-lg font-semibold text-gray-800 mb-4">发布章节</h3>
+                                    <div className="mb-4">
+                                        <div className="text-sm text-gray-500 mb-1">书籍</div>
+                                        <div className="font-medium text-gray-800">{publishModal.book.book_name}</div>
+                                    </div>
+                                    <div className="mb-4">
+                                        <div className="text-sm text-gray-500 mb-1">章节</div>
+                                        <div className="font-medium text-gray-800">{publishModal.chapter.chapter_title}</div>
+                                        <div className="text-sm text-gray-400">{publishModal.chapter.word_count.toLocaleString()} 字</div>
+                                    </div>
+                                    <div className="mb-4">
+                                        <label className="block text-sm text-gray-600 mb-2">选择发布时间</label>
+                                        <input type="datetime-local" id="publishTime"
+                                            defaultValue={(() => {
+                                                const d = new Date();
+                                                d.setMinutes(d.getMinutes() + 30);
+                                                const pad = n => n.toString().padStart(2, '0');
+                                                return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                                            })()}
+                                            min={new Date().toISOString().slice(0, 16)}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                                    </div>
+                                </div>
+                                <div className="bg-gray-50 px-6 py-4 flex justify-end gap-3">
+                                    <button onClick={handlePublishNow}
+                                        className="px-4 py-2 text-white bg-orange-500 rounded-lg hover:bg-orange-600 transition-colors">
+                                        立即发布（延后1分钟）
+                                    </button>
+                                    <button onClick={() => {
+                                        const timeInput = document.getElementById('publishTime');
+                                        if (timeInput && timeInput.value) {
+                                            handlePublishAtTime(timeInput.value);
+                                        } else {
+                                            window.showToast('请选择发布时间', 'warning');
+                                        }
+                                    }}
+                                        className="px-4 py-2 text-white bg-green-500 rounded-lg hover:bg-green-600 transition-colors">
+                                        确认发布
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     )}
                 </div>
             );
@@ -589,9 +919,11 @@
             };
 
             const handleDelete = async (id) => {
-                if (!confirm('确定删除这个定时任务？')) return;
-                await fetch(`${API_BASE}/schedules/${id}`, { method: 'DELETE' });
-                loadData();
+                window.showConfirm('确定删除这个定时任务？', async () => {
+                    await fetch(`${API_BASE}/schedules/${id}`, { method: 'DELETE' });
+                    loadData();
+                    window.showToast('删除成功', 'success');
+                });
             };
 
             // 生成 cron 表达式帮助文本
@@ -764,11 +1096,9 @@
 
         function Tasks() {
             const [tasks, setTasks] = React.useState([]);
-            const [books, setBooks] = React.useState([]);
-            const [chapters, setChapters] = React.useState([]);
             const [loading, setLoading] = React.useState(true);
-            const [showAdd, setShowAdd] = React.useState(false);
-            const [form, setForm] = React.useState({ book_id: '', chapter_id: '', scheduled_time: '' });
+            const [editingId, setEditingId] = React.useState(null);
+            const [editTime, setEditTime] = React.useState('');
 
             const loadTasks = () => {
                 setLoading(true);
@@ -779,133 +1109,110 @@
                     .finally(() => setLoading(false));
             };
 
-            const loadBooks = () => {
-                fetch(`${API_BASE}/books`).then(r => r.json())
-                    .then(data => setBooks(Array.isArray(data) ? data : (data.books || [])));
+            React.useEffect(() => { loadTasks(); }, []);
+
+            const handleEditTime = (task) => {
+                setEditingId(task.id);
+                const time = task.scheduled_time ? new Date(task.scheduled_time) : new Date();
+                setEditTime(time.toISOString().slice(0, 16));
             };
 
-            const loadChapters = (bookId) => {
-                fetch(`${API_BASE}/books/${bookId}/chapters`).then(r => r.json())
-                    .then(data => setChapters(Array.isArray(data) ? data : []));
-            };
-
-            React.useEffect(() => { loadTasks(); loadBooks(); }, []);
-
-            const handleBookChange = (bookId) => {
-                setForm({...form, book_id: bookId, chapter_id: ''});
-                if (bookId) loadChapters(bookId);
-            };
-
-            const handleAdd = async () => {
-                if (!form.chapter_id) return;
-                const scheduled = form.scheduled_time || new Date().toISOString();
-                await fetch(`${API_BASE}/tasks`, {
-                    method: 'POST',
+            const handleSaveTime = async (taskId) => {
+                const scheduled = new Date(editTime).toISOString();
+                await fetch(`${API_BASE}/tasks/${taskId}`, {
+                    method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chapter_id: parseInt(form.chapter_id), scheduled_time: scheduled })
+                    body: JSON.stringify({ scheduled_time: scheduled })
                 });
-                setForm({ book_id: '', chapter_id: '', scheduled_time: '' });
-                setShowAdd(false);
-                setChapters([]);
+                setEditingId(null);
                 loadTasks();
+                window.showToast('修改成功', 'success');
             };
 
             const handleDelete = async (taskId) => {
-                await fetch(`${API_BASE}/tasks/${taskId}`, { method: 'DELETE' });
-                loadTasks();
-            };
-
-            const handleCancel = async (taskId) => {
-                await fetch(`${API_BASE}/tasks/${taskId}/cancel`, { method: 'POST' });
-                loadTasks();
+                window.showConfirm('确定删除这个发布任务？', async () => {
+                    await fetch(`${API_BASE}/tasks/${taskId}`, { method: 'DELETE' });
+                    loadTasks();
+                    window.showToast('删除成功', 'success');
+                });
             };
 
             if (loading) return <div className="text-gray-500">加载中...</div>;
 
             return (
                 <div>
-                    <div className="flex justify-between items-center mb-4">
+                    <div className="mb-4">
                         <span className="text-gray-600">共 {tasks.length} 个待发布任务</span>
-                        <button onClick={() => setShowAdd(!showAdd)}
-                            className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
-                            {showAdd ? '取消' : '+ 添加任务'}
-                        </button>
                     </div>
 
-                    {showAdd && (
-                        <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                            <div className="grid grid-cols-3 gap-4">
-                                <select value={form.book_id}
-                                    onChange={e => handleBookChange(e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 rounded-md text-sm">
-                                    <option value="">选择书籍</option>
-                                    {books.map(b => <option key={b.id} value={b.id}>{b.book_name}</option>)}
-                                </select>
-                                <select value={form.chapter_id}
-                                    onChange={e => setForm({...form, chapter_id: e.target.value})}
-                                    className="px-3 py-2 border border-gray-300 rounded-md text-sm">
-                                    <option value="">选择章节</option>
-                                    {chapters.map(c => <option key={c.id} value={c.id}>第{c.chapter_number}章 {c.chapter_title}</option>)}
-                                </select>
-                                <input type="datetime-local" value={form.scheduled_time}
-                                    onChange={e => setForm({...form, scheduled_time: e.target.value})}
-                                    className="px-3 py-2 border border-gray-300 rounded-md text-sm" />
-                            </div>
-                            <button onClick={handleAdd}
-                                className="mt-3 px-4 py-2 bg-green-600 text-white rounded-md text-sm hover:bg-green-700">
-                                确认添加
-                            </button>
-                        </div>
-                    )}
                     {tasks.length === 0 ? (
                         <div className="text-gray-400 text-center py-8">暂无待发布任务</div>
                     ) : (
-                        <table className="w-full text-sm">
-                            <thead>
-                                <tr className="text-left text-gray-500 border-b">
-                                    <th className="pb-2">ID</th>
-                                    <th className="pb-2">章节</th>
-                                    <th className="pb-2">计划时间</th>
-                                    <th className="pb-2">状态</th>
-                                    <th className="pb-2">操作</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {tasks.map(task => (
-                                    <tr key={task.id} className="border-b border-gray-100 hover:bg-gray-50">
-                                        <td className="py-3">{task.id}</td>
-                                        <td className="py-3">{task.chapter_title || `章节${task.chapter_id}`}</td>
-                                        <td className="py-3 text-gray-500">{task.scheduled_time ? new Date(task.scheduled_time).toLocaleString() : '-'}</td>
-                                        <td className="py-3">
-                                            <span className={`px-2 py-1 rounded text-xs ${
-                                                task.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
-                                                task.status === 'publishing' ? 'bg-blue-100 text-blue-700' :
-                                                task.status === 'published' ? 'bg-green-100 text-green-700' :
-                                                'bg-gray-100 text-gray-600'
-                                            }`}>
-                                                {task.status === 'pending' ? '待发布' :
-                                                 task.status === 'publishing' ? '发布中' :
-                                                 task.status === 'published' ? '已发布' : task.status}
-                                            </span>
-                                        </td>
-                                        <td className="py-3">
-                                            {task.status === 'pending' && (
+                        <div className="space-y-3">
+                            {tasks.map(task => (
+                                <div key={task.id} className="border border-gray-200 rounded-lg p-4 bg-white">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex-1">
+                                            <div className="font-medium text-gray-800">
+                                                {task.book_name} - {task.chapter_title || `章节${task.chapter_id}`}
+                                            </div>
+                                            <div className="text-sm text-gray-500 mt-1">
+                                                账号: {task.account_name}
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            {editingId === task.id ? (
                                                 <>
-                                                    <button onClick={() => handleCancel(task.id)}
-                                                        className="px-2 py-1 text-xs bg-orange-100 text-orange-700 rounded hover:bg-orange-200 mr-1">
+                                                    <input type="datetime-local" value={editTime}
+                                                        onChange={e => setEditTime(e.target.value)}
+                                                        className="px-3 py-2 border border-gray-300 rounded-md text-sm" />
+                                                    <button onClick={() => handleSaveTime(task.id)}
+                                                        className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200">
+                                                        保存
+                                                    </button>
+                                                    <button onClick={() => setEditingId(null)}
+                                                        className="px-3 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">
                                                         取消
                                                     </button>
-                                                    <button onClick={() => handleDelete(task.id)}
-                                                        className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">
-                                                        删除
-                                                    </button>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <span className="text-sm text-gray-600">
+                                                        {task.scheduled_time ? (() => {
+                                                            const d = new Date(task.scheduled_time);
+                                                            const pad = n => n.toString().padStart(2, '0');
+                                                            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                                                        })() : '-'}
+                                                    </span>
+                                                    <span className={`px-2 py-1 rounded text-xs ${
+                                                        task.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
+                                                        task.status === 'publishing' ? 'bg-blue-100 text-blue-700' :
+                                                        task.status === 'published' ? 'bg-green-100 text-green-700' :
+                                                        'bg-gray-100 text-gray-600'
+                                                    }`}>
+                                                        {task.status === 'pending' ? '待发布' :
+                                                         task.status === 'publishing' ? '发布中' :
+                                                         task.status === 'published' ? '已发布' : task.status}
+                                                    </span>
+                                                    {task.status === 'pending' && (
+                                                        <>
+                                                            <button onClick={() => handleEditTime(task)}
+                                                                className="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                                                                修改时间
+                                                            </button>
+                                                            <button onClick={() => handleDelete(task.id)}
+                                                                className="px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">
+                                                                删除
+                                                            </button>
+                                                        </>
+                                                    )}
                                                 </>
                                             )}
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     )}
                 </div>
             );
@@ -998,22 +1305,22 @@
 
             const handleSync = async () => {
                 if (!selectedAccount) return;
-                if (!confirm('确定要同步所选账号的番茄书籍吗？这将重新从番茄网站获取书籍列表。')) return;
-
-                setSyncing(true);
-                try {
-                    const res = await fetch(`${API_BASE}/books/sync/${selectedAccount}`, { method: 'POST' });
-                    const result = await res.json();
-                    if (result.error) {
-                        alert('同步失败: ' + result.error);
-                    } else {
-                        alert(`同步成功！新增 ${result.synced || 0} 本书籍，共 ${result.total || 0} 本`);
-                        loadData();
+                window.showConfirm('确定要同步所选账号的番茄书籍吗？这将重新从番茄网站获取书籍列表。', async () => {
+                    setSyncing(true);
+                    try {
+                        const res = await fetch(`${API_BASE}/books/sync/${selectedAccount}`, { method: 'POST' });
+                        const result = await res.json();
+                        if (result.error) {
+                            window.showToast('同步失败: ' + result.error, 'error');
+                        } else {
+                            window.showToast(`同步成功！新增 ${result.synced || 0} 本书籍，共 ${result.total || 0} 本`, 'success');
+                            loadData();
+                        }
+                    } catch (e) {
+                        window.showToast('同步失败: ' + e.message, 'error');
                     }
-                } catch (e) {
-                    alert('同步失败: ' + e.message);
-                }
-                setSyncing(false);
+                    setSyncing(false);
+                });
             };
 
             const activeAccounts = accounts.filter(a => a.has_cookies);
@@ -1212,3 +1519,10 @@
     </script>
 </body>
 </html>
+    <style>
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .animate-slide-in { animation: slideIn 0.3s ease-out; }
+    </style>

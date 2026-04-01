@@ -1,9 +1,11 @@
 """
 书籍API
 """
+import os
+import re
 from flask import jsonify, request
 from database.connection import get_session
-from database.models import Book, Chapter, Account
+from database.models import Book, Chapter, Account, PendingTask, PublishLog
 from utils.logger import logger
 
 
@@ -153,6 +155,120 @@ def register_routes(api_bp):
             return jsonify({"error": "书籍不存在"}), 404
         except Exception as e:
             db.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            db.close()
+
+    @api_bp.route('/local-books', methods=['GET'])
+    def get_local_books():
+        """获取本地书籍列表（扫描本地文件夹）"""
+        db = get_session()
+        try:
+            books = db.query(Book).filter(
+                Book.local_folder != '',
+                Book.local_folder.isnot(None)
+            ).all()
+
+            result = []
+            for book in books:
+                folder = book.local_folder
+                if not folder or not os.path.exists(folder):
+                    result.append({
+                        "id": book.id,
+                        "book_name": book.book_name,
+                        "local_folder": folder,
+                        "account_name": book.account.name if book.account else None,
+                        "exists": False,
+                        "chapters": [],
+                        "total_chapters": 0,
+                        "total_words": 0,
+                        "error": "文件夹不存在" if folder else "未设置本地路径"
+                    })
+                    continue
+
+                # 扫描文件夹中的 txt 文件
+                chapters = []
+                total_words = 0
+                try:
+                    files = os.listdir(folder)
+                    txt_files = [f for f in files if f.endswith('.txt')]
+
+                    for txt_file in txt_files:
+                        file_path = os.path.join(folder, txt_file)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                                word_count = len(content)
+                                total_words += word_count
+
+                            # 解析章节名
+                            match = re.search(r'第(\d+)章\s+(.+)', txt_file)
+                            if match:
+                                chapter_number = int(match.group(1))
+                                chapter_title = match.group(2).replace('.txt', '')
+                            else:
+                                chapter_number = len(chapters) + 1
+                                chapter_title = txt_file.replace('.txt', '')
+
+                            # 查询章节发布状态
+                            publish_status = 'none'  # none: 未发布, pending: 待发布, published: 已发布, failed: 发布失败
+
+                            # 查询该章节是否有成功的发布记录
+                            success_task = db.query(PendingTask).filter(
+                                PendingTask.chapter_file == file_path,
+                                PendingTask.status == 'published'
+                            ).first()
+
+                            if success_task:
+                                publish_status = 'published'
+                            else:
+                                # 查询是否有失败的记录
+                                failed_task = db.query(PendingTask).filter(
+                                    PendingTask.chapter_file == file_path,
+                                    PendingTask.status.in_(['failed', 'cancelled'])
+                                ).first()
+
+                                pending_task = db.query(PendingTask).filter(
+                                    PendingTask.chapter_file == file_path,
+                                    PendingTask.status.in_(['pending', 'publishing'])
+                                ).first()
+
+                                if pending_task:
+                                    publish_status = 'pending'
+                                elif failed_task:
+                                    publish_status = 'failed'
+
+                            chapters.append({
+                                "file_name": txt_file,
+                                "chapter_number": chapter_number,
+                                "chapter_title": chapter_title,
+                                "word_count": word_count,
+                                "file_path": file_path,
+                                "publish_status": publish_status
+                            })
+                        except Exception as e:
+                            logger.warning(f"读取文件失败 {file_path}: {e}")
+
+                    # 按章节号排序
+                    chapters.sort(key=lambda x: x['chapter_number'])
+
+                except Exception as e:
+                    logger.error(f"扫描文件夹失败 {folder}: {e}")
+
+                result.append({
+                    "id": book.id,
+                    "book_name": book.book_name,
+                    "local_folder": folder,
+                    "account_name": book.account.name if book.account else None,
+                    "exists": True,
+                    "chapters": chapters,
+                    "total_chapters": len(chapters),
+                    "total_words": total_words
+                })
+
+            return jsonify(result)
+        except Exception as e:
+            logger.error(f"获取本地书籍失败: {e}")
             return jsonify({"error": str(e)}), 500
         finally:
             db.close()
