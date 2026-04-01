@@ -1609,7 +1609,13 @@
                             if (result.error) {
                                 window.showToast('同步失败: ' + result.error, 'error');
                             } else {
-                                window.showToast(`同步成功！新增 ${result.synced || 0} 本书籍，共 ${result.total || 0} 本`, 'success');
+                                const synced = result.synced || 0;
+                                const deleted = result.deleted || 0;
+                                const total = result.total || 0;
+                                let msg = `同步成功！共 ${total} 本书籍`;
+                                if (synced > 0) msg += `，新增 ${synced} 本`;
+                                if (deleted > 0) msg += `，删除 ${deleted} 本已完结书籍`;
+                                window.showToast(msg, 'success');
                                 loadData();
                             }
                         } catch (e) {

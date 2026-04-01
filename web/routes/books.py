@@ -48,8 +48,34 @@ def register_routes(api_bp):
                     manager = AsyncBookManager(page)
                     books_data = await manager.get_book_list()
 
+                    # 构建番茄网站上当前有效的书籍ID集合
+                    active_book_ids = {book.get('fanqie_book_id') for book in books_data}
+
                     # 同步到数据库
                     synced_count = 0
+                    deleted_count = 0
+
+                    # 先检查并删除数据库中已完结/隐藏的书籍
+                    existing_books = db.query(Book).filter_by(account_id=account_id).all()
+                    for existing_book in existing_books:
+                        # 如果数据库中的书籍在番茄网站上找不到，说明已完结/隐藏
+                        if existing_book.fanqie_book_id not in active_book_ids:
+                            book_name = existing_book.book_name
+                            # 删除关联的章节
+                            from database.models import Chapter
+                            db.query(Chapter).filter_by(book_id=existing_book.id).delete()
+                            # 删除关联的待发布任务
+                            from database.models import PendingTask
+                            db.query(PendingTask).filter_by(book_id=existing_book.id).delete()
+                            # 删除关联的定时任务
+                            from database.models import Schedule
+                            db.query(Schedule).filter_by(book_id=existing_book.id).delete()
+                            # 删除书籍本身
+                            db.delete(existing_book)
+                            deleted_count += 1
+                            logger.info(f"自动删除已完结/隐藏书籍: {book_name}")
+
+                    # 更新或添加书籍
                     for book_info in books_data:
                         # 检查是否已存在
                         existing = db.query(Book).filter_by(
@@ -74,8 +100,8 @@ def register_routes(api_bp):
                             existing.book_status = book_info.get('book_status', 'active')
 
                     db.commit()
-                    logger.info(f"成功同步 {synced_count} 本新书籍到账号 {account_id}")
-                    return {"success": True, "synced": synced_count, "total": len(books_data)}
+                    logger.info(f"同步完成: 新增 {synced_count} 本, 删除 {deleted_count} 本已完结书籍")
+                    return {"success": True, "synced": synced_count, "deleted": deleted_count, "total": len(books_data)}
                 finally:
                     await page.close()
                     await context.close()
