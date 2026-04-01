@@ -12,7 +12,7 @@ from typing import Optional, Callable, List
 
 from sqlalchemy.orm import Session
 from database.connection import safe_session
-from database.models import PendingTask, Chapter, Book, Account, PublishLog
+from database.models import PendingTask, Chapter, Book, Account, PublishLog, Schedule
 from utils.logger import logger
 from utils.feishu import get_feishu_notifier
 from chapters.tracker import chapter_tracker
@@ -290,24 +290,28 @@ class TaskScheduler:
                             task.status = "published"
                             task.notes = "章节已存在于番茄网站"
                             self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "skipped", "章节已存在于番茄网站，同步标记为已发布", result.duration_ms)
-                            logger.info(f"章节 '{chapter_title}' 已存在于番茄网站，标记为已发布")
+                            logger.info(f"章节 '{full_chapter_title}' 已存在于番茄网站，标记为已发布")
                             # 发送飞书通知
-                            self._send_feishu_notification(book_name, chapter_title, True)
+                            self._send_feishu_notification(book_name, full_chapter_title, True)
+                            # 自动更新起始章节
+                            self._update_schedule_start_chapter(book_id, chapter_number)
                         else:
                             chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
                             task.status = "published"
                             task.notes = "发布成功"
                             self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "success", result.message, result.duration_ms)
-                            logger.info(f"章节发布成功: {chapter_title}")
+                            logger.info(f"章节发布成功: {full_chapter_title}")
                             # 发送飞书通知
-                            self._send_feishu_notification(book_name, chapter_title, True)
+                            self._send_feishu_notification(book_name, full_chapter_title, True)
+                            # 自动更新起始章节
+                            self._update_schedule_start_chapter(book_id, chapter_number)
                     else:
                         chapter_tracker.mark_chapter_failed(chapter_id, result.message)
                         self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "failed", result.message, result.duration_ms)
-                        logger.error(f"章节发布失败: {chapter_title} - {result.message}")
+                        logger.error(f"章节发布失败: {full_chapter_title} - {result.message}")
                         self._mark_task_failed(task_id, result.message, chapter_id)
                         # 发送飞书通知
-                        self._send_feishu_notification(book_name, chapter_title, False, result.message)
+                        self._send_feishu_notification(book_name, full_chapter_title, False, result.message)
 
             except asyncio.TimeoutError:
                 logger.error(f"发布超时: chapter_id={chapter_id}")
@@ -394,6 +398,29 @@ class TaskScheduler:
                 )
         except Exception as e:
             logger.error(f"发送飞书通知失败: {e}")
+
+    def _update_schedule_start_chapter(self, book_id: int, published_chapter_number: int):
+        """自动更新定时任务的起始章节为下一个待发布章节"""
+        with safe_session() as db:
+            schedules = db.query(Schedule).filter_by(book_id=book_id, is_active=True).all()
+            if not schedules:
+                return
+
+            schedule = schedules[0]
+
+            # 查询下一个待发布的章节
+            next_chapter = db.query(Chapter).filter(
+                Chapter.book_id == book_id,
+                Chapter.status == "pending",
+                Chapter.chapter_number > published_chapter_number
+            ).order_by(Chapter.chapter_number).first()
+
+            if next_chapter:
+                old_start = schedule.start_chapter
+                schedule.start_chapter = next_chapter.chapter_number
+                logger.info(f"定时任务起始章节自动更新: {old_start} -> {next_chapter.chapter_number} (已发布第{published_chapter_number}章)")
+            else:
+                logger.info(f"所有章节已发布完毕，无需更新起始章节")
 
     def _cancel_following_tasks(self, db: Session, failed_task: PendingTask, failed_chapter_id: int, error_message: str):
         """取消同一本书中后续章节的任务（串行发布规则）"""

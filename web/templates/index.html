@@ -20,8 +20,8 @@
             const [dialog, setDialog] = React.useState(null);
 
             React.useEffect(() => {
-                window.showConfirm = (message, onConfirm, onCancel) => {
-                    setDialog({ message, onConfirm: onConfirm || (() => {}), onCancel: onCancel || (() => {}) });
+                window.showConfirm = (message, onConfirm, onCancel, confirmText = '确认') => {
+                    setDialog({ message, onConfirm: onConfirm || (() => {}), onCancel: onCancel || (() => {}), confirmText });
                 };
             }, []);
 
@@ -48,8 +48,8 @@
                                 取消
                             </button>
                             <button onClick={() => { dialog.onConfirm(); setDialog(null); }}
-                                className="px-4 py-2 text-white bg-red-500 rounded-lg hover:bg-red-600 transition-colors">
-                                确认删除
+                                className="px-4 py-2 text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors">
+                                {dialog.confirmText || '确认'}
                             </button>
                         </div>
                     </div>
@@ -1593,22 +1593,27 @@
 
             const handleSync = async () => {
                 if (!selectedAccount) return;
-                window.showConfirm('确定要同步所选账号的番茄书籍吗？这将重新从番茄网站获取书籍列表。', async () => {
-                    setSyncing(true);
-                    try {
-                        const res = await fetch(`${API_BASE}/books/sync/${selectedAccount}`, { method: 'POST' });
-                        const result = await res.json();
-                        if (result.error) {
-                            window.showToast('同步失败: ' + result.error, 'error');
-                        } else {
-                            window.showToast(`同步成功！新增 ${result.synced || 0} 本书籍，共 ${result.total || 0} 本`, 'success');
-                            loadData();
+                window.showConfirm(
+                    '确定要同步所选账号的番茄书籍吗？这将重新从番茄网站获取书籍列表。',
+                    async () => {
+                        setSyncing(true);
+                        try {
+                            const res = await fetch(`${API_BASE}/books/sync/${selectedAccount}`, { method: 'POST' });
+                            const result = await res.json();
+                            if (result.error) {
+                                window.showToast('同步失败: ' + result.error, 'error');
+                            } else {
+                                window.showToast(`同步成功！新增 ${result.synced || 0} 本书籍，共 ${result.total || 0} 本`, 'success');
+                                loadData();
+                            }
+                        } catch (e) {
+                            window.showToast('同步失败: ' + e.message, 'error');
                         }
-                    } catch (e) {
-                        window.showToast('同步失败: ' + e.message, 'error');
-                    }
-                    setSyncing(false);
-                });
+                        setSyncing(false);
+                    },
+                    () => {},
+                    '确认同步'
+                );
             };
 
             const activeAccounts = accounts.filter(a => a.has_cookies);
