@@ -68,25 +68,48 @@ class AsyncBookManager:
     def _extract_status_from_element(self, el) -> str:
         """从书籍元素中提取状态（从标签/badge中查找）"""
         try:
-            # 尝试查找状态标签
+            # 先检查是否有表示"完结"或"隐藏"的标签
+            # 尝试查找所有可能的状态标签
             status_selectors = [
-                "[class*='status']", "[class*='tag']", "[class*='badge']",
+                "span", "div", "em", "strong", "label",
+                "[class*='tag']", "[class*='badge']", "[class*='status']",
                 "[class*='label']", "[class*='state']", "[class*='type']",
-                "span", "div", "em", "strong"
+                "[class*='completed']", "[class*='ended']", "[class*='finished']",
+                "[class*='hidden']", "[class*='gray']", "[class*='grey']",
+                "[class*='disabled']", "[class*='inactive']"
             ]
 
             for sel in status_selectors:
                 status_els = el.query_selector_all(sel)
                 for status_el in status_els:
+                    # 获取元素的class属性
+                    el_class = (status_el.get_attribute("class") or "").lower()
+                    el_style = (status_el.get_attribute("style") or "").lower()
+
+                    # 获取文本内容
                     text = (status_el.inner_text() or "").strip()
-                    # 检查状态关键词
-                    if '完结' in text:
+
+                    # 检查是否灰色/禁用状态的class
+                    if 'gray' in el_class or 'grey' in el_class or 'disabled' in el_class:
+                        if '完结' in text or 'end' in el_class or 'finish' in el_class:
+                            return 'completed'
+                        if '隐藏' in text or '私密' in text or 'hide' in el_class:
+                            return 'hidden'
+
+                    # 检查class中直接包含状态
+                    if 'completed' in el_class or 'finished' in el_class or 'ended' in el_class:
                         return 'completed'
-                    if '隐藏' in text or '私密' in text:
+                    if 'hidden' in el_class or 'private' in el_class:
+                        return 'hidden'
+
+                    # 检查文本内容中的状态关键词
+                    if '完结' in text or '已完结' in text:
+                        return 'completed'
+                    if '隐藏' in text or '私密' in text or '已隐藏' in text:
                         return 'hidden'
                     if '签约' in text:
                         return 'signed'
-                    if '连载' in text or '更新' in text:
+                    if '连载' in text or '更新' in text or '连载中' in text:
                         return 'serializing'
 
             return 'active'
