@@ -513,136 +513,149 @@ class AsyncChapterPublisher:
         return True
 
     async def _handle_confirm_dialog(self):
-        """处理确认弹窗 - 点击确定或确认按钮完成发布
+        """处理发布确认弹窗流程
 
-        处理流程：
-        1. 错别字提示框 -> 点确认/确定
-        2. AI创作提示框 -> 选"否"
-        3. 最终确认发布
+        完整流程：
+        1. "检测到你还有错别字未修改" -> 点击"提交"
+        2. "是否进行内容风险检测？" -> 点击"确定"
+        3. "发布设置"弹窗 -> AI单选框选"否" -> 点击"确认发布"
+        4. 等待页面跳转和"已提交"吐司
         """
-        await self._save_debug_screenshot("before_confirm_dialog")
+        logger.info(">>> 开始处理发布确认流程...")
 
-        # 等待弹窗出现
-        await asyncio.sleep(1)
-
-        # 处理所有弹窗（可能有多层弹窗）
-        max_retries = 5
+        # 处理多层弹窗，最多尝试10轮
+        max_retries = 10
         for retry in range(max_retries):
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.5)
 
-            # 先尝试点击错别字提示框的确认按钮
-            typo_selectors = [
-                "button:has-text('确认')",
-                "button:has-text('确定')",
-            ]
+            # 截图以便调试
+            await self._save_debug_screenshot(f"confirm_dialog_retry_{retry}")
 
-            for selector in typo_selectors:
-                try:
-                    el = await self.page.wait_for_selector(selector, timeout=1000)
-                    if el:
-                        btn_text = await el.text_content()
-                        btn_class = await el.get_attribute("class") or ""
-                        is_visible = await el.is_visible()
-                        if is_visible and '取消' not in (btn_text or ''):
-                            logger.info(f"点击确认按钮: {btn_text.strip()}")
-                            await el.click()
-                            await asyncio.sleep(1)
-                            break
-                except:
-                    pass
-
-            # 处理AI创作提示框 - 选择"否"
-            ai_selectors = [
-                "button:has-text('否')",
-                "button:has-text('不是')",
-                "[class*='radio'] button",
-            ]
-
-            for selector in ai_selectors:
-                try:
-                    el = await self.page.wait_for_selector(selector, timeout=1000)
-                    if el:
-                        btn_text = await el.text_content()
-                        is_visible = await el.is_visible()
-                        if is_visible and ('否' in (btn_text or '') or '不是' in (btn_text or '')):
-                            logger.info(f"选择AI选项: {btn_text.strip()}")
-                            await el.click()
-                            await asyncio.sleep(1)
-                            break
-                except:
-                    pass
-
-            # 尝试点击最终确认/发布按钮
-            confirm_selectors = [
-                "button:has-text('确认发布')",
-                "button:has-text('发布')",
+            # ===== 弹窗1 & 2: 错别字提示 & 风险检测 =====
+            # 尝试点击任何确认/提交按钮
+            submit_selectors = [
                 "button:has-text('提交')",
-                ".arco-btn-primary:has-text('发布')",
-                ".arco-btn-primary:has-text('提交')",
-                ".arco-modal button:has-text('发布')",
+                "button:has-text('确定')",
+                "button:has-text('确认')",
             ]
 
-            confirmed = False
-            for selector in confirm_selectors:
+            for selector in submit_selectors:
                 try:
-                    locator = self.page.locator(selector)
-                    buttons = await locator.all()
-
-                    for el in buttons:
+                    el = await self.page.wait_for_selector(selector, timeout=500)
+                    if el:
                         btn_text = await el.text_content()
                         is_visible = await el.is_visible()
                         btn_class = await el.get_attribute("class") or ""
 
                         # 跳过取消按钮
-                        if btn_text and '取消' in btn_text:
+                        if '取消' in (btn_text or ''):
+                            continue
+
+                        # 跳过关闭按钮
+                        if '关闭' in (btn_text or '') and 'arco-btn-secondary' in btn_class:
                             continue
 
                         if is_visible:
-                            logger.info(f"找到发布确认按钮: '{selector}' text='{btn_text.strip()}'")
+                            logger.info(f"点击按钮: '{btn_text.strip()}'")
                             await el.click()
-                            confirmed = True
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(1)
                             break
                 except:
                     pass
 
-            if confirmed:
-                logger.info("已点击最终发布确认按钮")
-                return True
+            # ===== 弹窗3: 发布设置（AI选择） =====
+            # 查找并选择"否"（不使用AI）
+            ai_selectors = [
+                "button:has-text('否')",
+                "button:has-text('不是')",
+                "[class*='radio']:has-text('否')",
+                "[class*='radio']:has-text('不使用')",
+            ]
 
-        # 最终回退：JavaScript点击任何可见的确认按钮
-        logger.info("使用JavaScript处理最终确认...")
+            for selector in ai_selectors:
+                try:
+                    el = await self.page.wait_for_selector(selector, timeout=500)
+                    if el:
+                        btn_text = await el.text_content()
+                        is_visible = await el.is_visible()
+                        if is_visible:
+                            logger.info(f"选择AI选项: '{btn_text.strip()}'")
+                            await el.click()
+                            await asyncio.sleep(0.5)
+                            break
+                except:
+                    pass
+
+            # 点击"确认发布"按钮
+            publish_selectors = [
+                "button:has-text('确认发布')",
+                "button:has-text('发布')",
+                "button:has-text('确认')",
+                ".arco-btn-primary:has-text('发布')",
+                ".arco-btn-primary:has-text('确认')",
+                ".arco-modal button:has-text('确认发布')",
+                ".arco-modal button:has-text('发布')",
+            ]
+
+            for selector in publish_selectors:
+                try:
+                    el = await self.page.wait_for_selector(selector, timeout=500)
+                    if el:
+                        btn_text = await el.text_content()
+                        is_visible = await el.is_visible()
+                        btn_class = await el.get_attribute("class") or ""
+
+                        # 跳过取消按钮
+                        if '取消' in (btn_text or ''):
+                            continue
+
+                        if is_visible:
+                            logger.info(f"点击发布确认: '{btn_text.strip()}'")
+                            await el.click()
+                            await asyncio.sleep(2)
+
+                            # 检查是否跳转到新页面（发布成功的标志）
+                            try:
+                                await self.page.wait_for_url("**/chapter-manage**", timeout=5000)
+                                logger.info("检测到页面跳转成功，可能发布完成")
+                            except:
+                                pass
+
+                            # 检查是否有"已提交"相关的吐司
+                            try:
+                                toast = await self.page.wait_for_selector("[class*='toast']", timeout=3000)
+                                toast_text = await toast.text_content() if toast else ""
+                                if toast_text and '提交' in toast_text:
+                                    logger.info(f"检测到成功吐司: {toast_text}")
+                                    return True
+                            except:
+                                pass
+
+                            return True
+                except:
+                    pass
+
+        # 最终回退：JavaScript处理
+        logger.info("使用JavaScript最终处理...")
         await self.page.evaluate("""
             () => {
                 const buttons = Array.from(document.querySelectorAll('button'));
-                const confirmKeywords = ['确定', '确认', '发布', '提交'];
-                const cancelKeywords = ['取消'];
 
+                // 1. 先点击任何非取消的确认按钮
                 for (const btn of buttons) {
                     const text = (btn.textContent || '').trim();
-                    const cls = btn.className || '';
-
-                    // 排除取消按钮
-                    let isCancel = false;
-                    for (const cancel of cancelKeywords) {
-                        if (text.includes(cancel)) {
-                            isCancel = true;
-                            break;
-                        }
-                    }
-                    if (isCancel) continue;
-
-                    // 查找确认按钮
-                    for (const keyword of confirmKeywords) {
-                        if (text.includes(keyword) || cls.includes('primary')) {
+                    if (text.includes('提交') || text.includes('确定') || text.includes('确认')) {
+                        if (!text.includes('取消')) {
                             btn.click();
-                            return { success: true, text: text };
+                            break;
                         }
                     }
                 }
             }
         """)
         await asyncio.sleep(2)
+
+        logger.info("发布确认流程执行完成")
         return True
 
     async def _fill_title(self, title: str):
