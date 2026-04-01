@@ -241,6 +241,11 @@ class TaskScheduler:
                 with safe_session(auto_commit=False) as db:
                     chapter = db.query(Chapter).filter_by(id=chapter_id).first()
                     chapter_title = chapter.chapter_title if chapter else "未知章节"
+                    chapter_number = chapter.chapter_number if chapter else 1
+                    book_name = chapter.book.book_name if chapter and chapter.book else "未知书籍"
+
+                # 构造完整标题（包含"第X章"前缀）供番茄网站使用
+                full_chapter_title = f"第{chapter_number}章 {chapter_title}"
 
                 chapter_tracker.mark_chapter_publishing(chapter_id)
 
@@ -262,7 +267,7 @@ class TaskScheduler:
                 try:
                     result = await publisher.publish_chapter(
                         fanqie_book_id=fanqie_book_id,
-                        chapter_title=chapter_title,
+                        chapter_title=full_chapter_title,
                         chapter_content=content,
                     )
                 except SessionExpiredException:

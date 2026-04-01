@@ -126,6 +126,7 @@ class Schedule(Base):
     cron_expression = Column(String(100), nullable=False)  # 如 "0 8,20 * * *"
     publish_mode = Column(String(20), default="chapters")  # chapters / words
     target_value = Column(Integer, default=1)  # 章节数或字数
+    start_chapter = Column(Integer, default=1)  # 从第几章开始发布
     is_active = Column(Boolean, default=True)
     last_run = Column(DateTime, nullable=True)
     next_run = Column(DateTime, nullable=True)
@@ -141,6 +142,7 @@ class Schedule(Base):
             "cron_expression": self.cron_expression,
             "publish_mode": self.publish_mode,
             "target_value": self.target_value,
+            "start_chapter": self.start_chapter,
             "is_active": self.is_active,
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "next_run": self.next_run.isoformat() if self.next_run else None,

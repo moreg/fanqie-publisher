@@ -1,7 +1,7 @@
 import asyncio
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from utils.logger import logger
 
@@ -61,9 +61,10 @@ async def _async_publish_chapter(schedule_id: int):
         # 同步本地文件夹
         chapter_tracker.sync_chapters(book.id)
 
-        # 获取待发布章节
+        # 获取待发布章节（从起始章节开始）
+        start_chapter = schedule.start_chapter or 1
         pending_chapters = chapter_tracker.get_next_pending_chapters(
-            book.id, schedule.chapters_per_run
+            book.id, schedule.target_value, start_chapter=start_chapter
         )
 
         if not pending_chapters:
@@ -73,24 +74,26 @@ async def _async_publish_chapter(schedule_id: int):
             return
 
         # 检查是否已有该书的待发布任务
-        existing_count = db.query(PendingTask).filter(
+        existing_tasks = db.query(PendingTask).filter(
             PendingTask.book_id == book.id,
             PendingTask.status.in_(["pending", "publishing", "retry_pending"])
-        ).count()
+        ).order_by(PendingTask.scheduled_time.desc()).all()
 
-        # 如果有待发布任务，不需要再添加（已经在队列中）
-        if existing_count > 0:
-            logger.info(f"书籍 '{book.book_name}' 已有待发布任务，跳过添加")
-            schedule.last_run = datetime.now()
-            db.commit()
-            return
+        # 找出最近的任务时间
+        now = datetime.now()
+        base_time = now + timedelta(seconds=60)  # 从当前时间+1分钟开始
 
-        # 将章节添加到预发布队列，延迟1分钟
-        from datetime import timedelta
-        base_time = datetime.now() + timedelta(seconds=60)
+        if existing_tasks:
+            latest_task = existing_tasks[0]
+            latest_time = latest_task.scheduled_time
+            # 确保新任务与最近任务间隔至少3分钟（180秒）
+            if (latest_time - base_time).total_seconds() > -180:
+                base_time = latest_time + timedelta(seconds=180)
+            logger.info(f"书籍 '{book.book_name}' 已有待发布任务，最近任务时间: {latest_time}，新任务从 {base_time} 开始")
 
+        # 将章节添加到预发布队列，间隔3分钟
         for i, chapter in enumerate(pending_chapters):
-            scheduled_time = datetime.fromtimestamp(base_time.timestamp() + (i * 120))
+            scheduled_time = base_time + timedelta(seconds=i * 180)  # 每章间隔3分钟
 
             task = PendingTask(
                 chapter_id=chapter.id,

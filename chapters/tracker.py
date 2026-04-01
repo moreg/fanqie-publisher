@@ -54,12 +54,16 @@ class ChapterTracker:
             logger.info(f"同步书籍 {book_id}: 新增 {new_count} 章节")
             return new_count
 
-    def get_next_pending_chapters(self, book_id: int, count: int = 1) -> List[Chapter]:
-        """获取下N个待发布章节"""
+    def get_next_pending_chapters(self, book_id: int, count: int = 1, start_chapter: int = 1) -> List[Chapter]:
+        """获取下N个待发布章节（从起始章节开始）"""
         with safe_session(auto_commit=False) as session:
             chapters = (
                 session.query(Chapter)
-                .filter_by(book_id=book_id, status="pending")
+                .filter(
+                    Chapter.book_id == book_id,
+                    Chapter.status == "pending",
+                    Chapter.chapter_number >= start_chapter
+                )
                 .order_by(Chapter.chapter_number)
                 .limit(count)
                 .all()

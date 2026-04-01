@@ -35,6 +35,10 @@ def create_app():
 # 创建应用实例
 app = create_app()
 
+# 启动待发布任务调度器
+from scheduler.task_scheduler import task_scheduler
+task_scheduler.start()
+
 
 @app.route('/')
 def index():

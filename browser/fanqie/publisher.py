@@ -230,7 +230,11 @@ class AsyncChapterPublisher:
             # 4c. 点击确认发布
             logger.info(">>> 步骤6: 点击确认发布...")
             await self._click_confirm_publish()
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
+
+            # 4d. 处理确认弹窗
+            logger.info(">>> 步骤7: 处理确认弹窗...")
+            await self._handle_confirm_dialog()
 
             duration = int((time.time() - start_time) * 1000)
             logger.info(f">>> 章节 '{chapter_title}' 发布成功，耗时 {duration}ms")
@@ -506,6 +510,139 @@ class AsyncChapterPublisher:
         except Exception as e:
             logger.debug(f"按ESC键失败: {e}")
 
+        return True
+
+    async def _handle_confirm_dialog(self):
+        """处理确认弹窗 - 点击确定或确认按钮完成发布
+
+        处理流程：
+        1. 错别字提示框 -> 点确认/确定
+        2. AI创作提示框 -> 选"否"
+        3. 最终确认发布
+        """
+        await self._save_debug_screenshot("before_confirm_dialog")
+
+        # 等待弹窗出现
+        await asyncio.sleep(1)
+
+        # 处理所有弹窗（可能有多层弹窗）
+        max_retries = 5
+        for retry in range(max_retries):
+            await asyncio.sleep(1)
+
+            # 先尝试点击错别字提示框的确认按钮
+            typo_selectors = [
+                "button:has-text('确认')",
+                "button:has-text('确定')",
+            ]
+
+            for selector in typo_selectors:
+                try:
+                    el = await self.page.wait_for_selector(selector, timeout=1000)
+                    if el:
+                        btn_text = await el.text_content()
+                        btn_class = await el.get_attribute("class") or ""
+                        is_visible = await el.is_visible()
+                        if is_visible and '取消' not in (btn_text or ''):
+                            logger.info(f"点击确认按钮: {btn_text.strip()}")
+                            await el.click()
+                            await asyncio.sleep(1)
+                            break
+                except:
+                    pass
+
+            # 处理AI创作提示框 - 选择"否"
+            ai_selectors = [
+                "button:has-text('否')",
+                "button:has-text('不是')",
+                "[class*='radio'] button",
+            ]
+
+            for selector in ai_selectors:
+                try:
+                    el = await self.page.wait_for_selector(selector, timeout=1000)
+                    if el:
+                        btn_text = await el.text_content()
+                        is_visible = await el.is_visible()
+                        if is_visible and ('否' in (btn_text or '') or '不是' in (btn_text or '')):
+                            logger.info(f"选择AI选项: {btn_text.strip()}")
+                            await el.click()
+                            await asyncio.sleep(1)
+                            break
+                except:
+                    pass
+
+            # 尝试点击最终确认/发布按钮
+            confirm_selectors = [
+                "button:has-text('确认发布')",
+                "button:has-text('发布')",
+                "button:has-text('提交')",
+                ".arco-btn-primary:has-text('发布')",
+                ".arco-btn-primary:has-text('提交')",
+                ".arco-modal button:has-text('发布')",
+            ]
+
+            confirmed = False
+            for selector in confirm_selectors:
+                try:
+                    locator = self.page.locator(selector)
+                    buttons = await locator.all()
+
+                    for el in buttons:
+                        btn_text = await el.text_content()
+                        is_visible = await el.is_visible()
+                        btn_class = await el.get_attribute("class") or ""
+
+                        # 跳过取消按钮
+                        if btn_text and '取消' in btn_text:
+                            continue
+
+                        if is_visible:
+                            logger.info(f"找到发布确认按钮: '{selector}' text='{btn_text.strip()}'")
+                            await el.click()
+                            confirmed = True
+                            await asyncio.sleep(2)
+                            break
+                except:
+                    pass
+
+            if confirmed:
+                logger.info("已点击最终发布确认按钮")
+                return True
+
+        # 最终回退：JavaScript点击任何可见的确认按钮
+        logger.info("使用JavaScript处理最终确认...")
+        await self.page.evaluate("""
+            () => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const confirmKeywords = ['确定', '确认', '发布', '提交'];
+                const cancelKeywords = ['取消'];
+
+                for (const btn of buttons) {
+                    const text = (btn.textContent || '').trim();
+                    const cls = btn.className || '';
+
+                    // 排除取消按钮
+                    let isCancel = false;
+                    for (const cancel of cancelKeywords) {
+                        if (text.includes(cancel)) {
+                            isCancel = true;
+                            break;
+                        }
+                    }
+                    if (isCancel) continue;
+
+                    // 查找确认按钮
+                    for (const keyword of confirmKeywords) {
+                        if (text.includes(keyword) || cls.includes('primary')) {
+                            btn.click();
+                            return { success: true, text: text };
+                        }
+                    }
+                }
+            }
+        """)
+        await asyncio.sleep(2)
         return True
 
     async def _fill_title(self, title: str):
@@ -1129,27 +1266,78 @@ class AsyncChapterPublisher:
         # 填写序号数字（番茄UI已有"第"和"章"，只需填中间的序号）
         if chapter_number:
             logger.info(f">>> 填写章节序号: '{chapter_number}'")
-            await self.page.evaluate("""
+            
+            # 使用JavaScript直接设置值并触发React事件
+            fill_result = await self.page.evaluate("""
                 (serial) => {
                     const inputs = document.querySelectorAll('input');
+                    let targetInput = null;
+                    
+                    // 查找序号输入框
                     for (let i = 0; i < inputs.length; i++) {
                         const inp = inputs[i];
-                        const cls = inp.className || '';
-                        // 查找序号输入框：没有placeholder，class包含serial-input
-                        if (!inp.placeholder && cls.includes('serial-input') && !cls.includes('editor')) {
-                            const nativeSetter = Object.getOwnPropertyDescriptor(
-                                window.HTMLInputElement.prototype, 'value'
-                            ).set;
-                            nativeSetter.call(inp, serial);
-                            inp.dispatchEvent(new Event('input', { bubbles: true }));
-                            inp.dispatchEvent(new Event('change', { bubbles: true }));
-                            return { success: true, index: i, value: inp.value };
+                        if (inp.className && inp.className.includes('serial-input')) {
+                            targetInput = inp;
+                            break;
                         }
                     }
+                    
+                    if (!targetInput) {
+                        // 回退：查找没有placeholder的input
+                        for (let i = 0; i < inputs.length; i++) {
+                            const inp = inputs[i];
+                            if (!inp.placeholder && inp.type !== 'hidden' && inp.offsetParent !== null) {
+                                targetInput = inp;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (targetInput) {
+                        // 聚焦
+                        targetInput.focus();
+                        
+                        // 清除现有内容
+                        targetInput.select && targetInput.select();
+                        
+                        // 使用 React 的事件触发方式
+                        const reactSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        
+                        // 设置新值
+                        reactSetter.call(targetInput, serial);
+                        
+                        // 触发 React 合成事件
+                        const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+                        const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+                        
+                        targetInput.dispatchEvent(inputEvent);
+                        targetInput.dispatchEvent(changeEvent);
+                        
+                        // 尝试使用 React 的内部事件处理器
+                        const tracker = targetInput._valueTracker;
+                        if (tracker) {
+                            tracker.setValue('');
+                        }
+                        reactSetter.call(targetInput, serial);
+                        targetInput.dispatchEvent(inputEvent);
+                        
+                        targetInput.blur();
+                        
+                        return {
+                            success: true,
+                            value: targetInput.value,
+                            rect: targetInput.getBoundingClientRect()
+                        };
+                    }
+                    
                     return { success: false };
                 }
-            """, chapter_number)
-            await asyncio.sleep(0.2)
+            """, str(chapter_number))
+            
+            logger.info(f">>> 序号填写结果: {fill_result}")
+            await asyncio.sleep(0.3)
 
         # 填写标题（第二个输入框，有placeholder='请输入标题'）
         logger.info(f">>> 填写章节标题: '{chapter_title_only}'")

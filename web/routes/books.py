@@ -272,3 +272,26 @@ def register_routes(api_bp):
             return jsonify({"error": str(e)}), 500
         finally:
             db.close()
+
+    @api_bp.route('/books/<int:book_id>/open-folder', methods=['POST'])
+    def open_book_folder(book_id):
+        """打开书籍本地文件夹"""
+        db = get_session()
+        try:
+            book = db.query(Book).filter_by(id=book_id).first()
+            if not book:
+                return jsonify({"error": "书籍不存在"}), 404
+
+            folder = book.local_folder
+            if not folder or not os.path.exists(folder):
+                return jsonify({"error": "文件夹不存在"}), 400
+
+            # 使用 Windows explorer 打开文件夹
+            import subprocess
+            subprocess.Popen(f'explorer.exe "{folder}"')
+            return jsonify({"success": True, "folder": folder})
+        except Exception as e:
+            logger.error(f"打开文件夹失败: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            db.close()
