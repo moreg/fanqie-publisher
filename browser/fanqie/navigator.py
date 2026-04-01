@@ -65,13 +65,41 @@ class AsyncBookManager:
 
         return ""
 
+    def _extract_status_from_element(self, el) -> str:
+        """从书籍元素中提取状态（从标签/badge中查找）"""
+        try:
+            # 尝试查找状态标签
+            status_selectors = [
+                "[class*='status']", "[class*='tag']", "[class*='badge']",
+                "[class*='label']", "[class*='state']", "[class*='type']",
+                "span", "div", "em", "strong"
+            ]
+
+            for sel in status_selectors:
+                status_els = el.query_selector_all(sel)
+                for status_el in status_els:
+                    text = (status_el.inner_text() or "").strip()
+                    # 检查状态关键词
+                    if '完结' in text:
+                        return 'completed'
+                    if '隐藏' in text or '私密' in text:
+                        return 'hidden'
+                    if '签约' in text:
+                        return 'signed'
+                    if '连载' in text or '更新' in text:
+                        return 'serializing'
+
+            return 'active'
+        except Exception:
+            return 'active'
+
     def _extract_status_from_name(self, name: str) -> str:
         """从书名中提取状态"""
         if not name:
             return 'unknown'
         if '已完结' in name:
             return 'completed'
-        if '已隐藏' in name:
+        if '已隐藏' in name or '已私密' in name:
             return 'hidden'
         if '已签约' in name:
             return 'signed'
@@ -92,10 +120,11 @@ class AsyncBookManager:
         return name.strip()[:100]
 
     async def get_book_list(self) -> list[dict]:
-        """获取当前账号的书籍列表"""
+        """获取当前账号的书籍列表（过滤掉完结和隐藏的书籍）"""
         await self.navigator.goto_book_manage()
 
         books_dict = {}
+        filtered_count = 0  # 记录被过滤的书籍数量
         try:
             # 尝试多种选择器
             selectors = [
@@ -117,6 +146,9 @@ class AsyncBookManager:
             idx = 0
             for el in book_elements:
                 try:
+                    # 先从元素中提取状态（从标签/badge中查找）
+                    element_status = self._extract_status_from_element(el)
+
                     # 获取书名
                     name_el = await el.query_selector(
                         "[class*='title']:not([class*='sub']):not([class*='desc']), "
@@ -124,8 +156,18 @@ class AsyncBookManager:
                         "h1, h2, h3, h4, span:first-child"
                     )
                     raw_name = (await name_el.inner_text()).strip() if name_el else ""
-                    status = self._extract_status_from_name(raw_name)
+                    # 也从书名中提取状态
+                    name_status = self._extract_status_from_name(raw_name)
                     name = self._clean_book_name(raw_name)
+
+                    # 综合状态：优先使用元素状态，否则使用书名状态
+                    final_status = element_status if element_status != 'active' else name_status
+
+                    # 过滤掉已完结和已隐藏的书籍
+                    if final_status in ['completed', 'hidden']:
+                        filtered_count += 1
+                        logger.info(f"跳过已完结/已隐藏书籍: {name} (状态: {final_status})")
+                        continue
 
                     if not name:
                         continue
@@ -158,8 +200,8 @@ class AsyncBookManager:
                         book_id = f"book_{idx}"
                         idx += 1
 
-                    books_dict[name] = {"fanqie_book_id": book_id, "book_name": name, "book_status": status}
-                    logger.info(f"书籍: {name} -> ID: {book_id}")
+                    books_dict[name] = {"fanqie_book_id": book_id, "book_name": name, "book_status": final_status}
+                    logger.info(f"书籍: {name} -> ID: {book_id}, 状态: {final_status}")
 
                 except Exception as e:
                     logger.warning(f"解析书籍元素失败: {e}")
@@ -185,5 +227,5 @@ class AsyncBookManager:
         except Exception as e:
             logger.error(f"获取书籍列表失败: {e}")
 
-        logger.info(f"获取到 {len(books_dict)} 本书籍")
+        logger.info(f"获取到 {len(books_dict)} 本书籍（已过滤 {filtered_count} 本完结/隐藏书籍）")
         return list(books_dict.values())
