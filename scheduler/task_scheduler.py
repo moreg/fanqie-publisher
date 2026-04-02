@@ -80,23 +80,39 @@ class TaskScheduler:
             logger.debug(f"获取确认延迟失败: {e}")
         return 20  # 默认20分钟
 
-    def _add_publish_confirm(self, book_id: int, chapter_id: int, fanqie_book_id: str, chapter_title: str):
-        """添加待确认的发布记录"""
+    def _add_publish_confirm(self, book_id: int, chapter_id: int, fanqie_book_id: str, chapter_title: str, book_name: str = None, initial_error: str = None):
+        """添加待确认的发布记录
+
+        Args:
+            book_id: 书籍ID
+            chapter_id: 章节ID
+            fanqie_book_id: 番茄书籍ID
+            chapter_title: 章节标题
+            book_name: 书籍名称（用于飞书通知）
+            initial_error: 初始错误信息（如发布失败）
+        """
         try:
             delay_minutes = self._get_confirm_delay_minutes()
             confirm_after = datetime.now() + timedelta(minutes=delay_minutes)
 
             with safe_session() as db:
+                # 获取书籍名称
+                if not book_name:
+                    book = db.query(Book).filter_by(id=book_id).first()
+                    book_name = book.book_name if book else None
+
                 confirm = PublishConfirm(
                     book_id=book_id,
                     chapter_id=chapter_id,
                     fanqie_book_id=fanqie_book_id,
                     chapter_title=chapter_title,
                     status="pending",
-                    confirm_after=confirm_after
+                    confirm_after=confirm_after,
+                    # 保存书籍名称用于后续通知
+                    error_message=initial_error
                 )
                 db.add(confirm)
-                logger.info(f"添加发布确认记录: {chapter_title}, 确认时间: {confirm_after}")
+                logger.info(f"添加发布确认记录: {chapter_title}, 确认时间: {confirm_after}" + (f", 初始错误: {initial_error}" if initial_error else ""))
         except Exception as e:
             logger.error(f"添加发布确认记录失败: {e}")
 
@@ -322,31 +338,27 @@ class TaskScheduler:
                             task.notes = "章节已存在于番茄网站"
                             self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "skipped", "章节已存在于番茄网站，同步标记为已发布", result.duration_ms)
                             logger.info(f"章节 '{full_chapter_title}' 已存在于番茄网站，标记为已发布")
-                            # 发送飞书通知
-                            self._send_feishu_notification(book_name, full_chapter_title, True)
                             # 自动更新起始章节
                             self._update_schedule_start_chapter(book_id, chapter_number)
-                            # 添加发布确认记录
-                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title)
+                            # 添加发布确认记录（会发送飞书通知）
+                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name)
                         else:
                             chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
                             task.status = "published"
                             task.notes = "发布成功"
                             self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "success", result.message, result.duration_ms)
                             logger.info(f"章节发布成功: {full_chapter_title}")
-                            # 发送飞书通知
-                            self._send_feishu_notification(book_name, full_chapter_title, True)
                             # 自动更新起始章节
                             self._update_schedule_start_chapter(book_id, chapter_number)
-                            # 添加发布确认记录
-                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title)
+                            # 添加发布确认记录（会发送飞书通知）
+                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name)
                     else:
                         chapter_tracker.mark_chapter_failed(chapter_id, result.message)
                         self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "failed", result.message, result.duration_ms)
                         logger.error(f"章节发布失败: {full_chapter_title} - {result.message}")
                         self._mark_task_failed(task_id, result.message, chapter_id)
-                        # 发送飞书通知
-                        self._send_feishu_notification(book_name, full_chapter_title, False, result.message)
+                        # 发布失败也添加到确认队列，通过确认失败发送飞书通知
+                        self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name, result.message)
 
             except asyncio.TimeoutError:
                 logger.error(f"发布超时: chapter_id={chapter_id}")

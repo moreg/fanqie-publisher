@@ -271,6 +271,7 @@ class PublishConfirm(Base):
     chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False)
     fanqie_book_id = Column(String(50), nullable=False)  # 番茄书籍ID
     chapter_title = Column(String(200), nullable=False)  # 章节标题
+    book_name = Column(String(200), nullable=True)  # 书籍名称（冗余字段，用于通知）
     status = Column(String(20), default="pending")  # pending(待确认) / confirmed(已确认成功) / failed(确认失败) / cancelled(已取消)
     confirm_after = Column(DateTime, nullable=False)  # 等待确认的时间点
     confirmed_at = Column(DateTime, nullable=True)  # 实际确认时间
@@ -296,7 +297,7 @@ class PublishConfirm(Base):
             "retry_count": self.retry_count,
             "error_message": self.error_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,
-            "book_name": self.book.book_name if self.book else None,
+            "book_name": self.book_name or (self.book.book_name if self.book else None),
             "account_id": self.book.account_id if self.book else None,
             "account_name": self.book.account.name if self.book and self.book.account else None,
         }
