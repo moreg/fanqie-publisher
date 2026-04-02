@@ -256,3 +256,66 @@ class FeishuConfig(Base):
             "webhook_url": self.webhook_url,
             "enabled": self.enabled,
         }
+
+
+class PublishConfirm(Base):
+    """发布确认记录"""
+    __tablename__ = "publish_confirms"
+    __table_args__ = (
+        Index('ix_publish_confirms_status', 'status'),
+        Index('ix_publish_confirms_confirm_after', 'confirm_after'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    book_id = Column(Integer, ForeignKey("books.id"), nullable=False)
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), nullable=False)
+    fanqie_book_id = Column(String(50), nullable=False)  # 番茄书籍ID
+    chapter_title = Column(String(200), nullable=False)  # 章节标题
+    status = Column(String(20), default="pending")  # pending(待确认) / confirmed(已确认成功) / failed(确认失败) / cancelled(已取消)
+    confirm_after = Column(DateTime, nullable=False)  # 等待确认的时间点
+    confirmed_at = Column(DateTime, nullable=True)  # 实际确认时间
+    retry_count = Column(Integer, default=0)  # 确认重试次数
+    error_message = Column(Text, nullable=True)  # 错误信息
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    book = relationship("Book")
+    chapter = relationship("Chapter")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "book_id": self.book_id,
+            "chapter_id": self.chapter_id,
+            "fanqie_book_id": self.fanqie_book_id,
+            "chapter_title": self.chapter_title,
+            "chapter_number": self.chapter.chapter_number if self.chapter else None,
+            "status": self.status,
+            "confirm_after": self.confirm_after.isoformat() if self.confirm_after else None,
+            "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
+            "retry_count": self.retry_count,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "book_name": self.book.book_name if self.book else None,
+            "account_id": self.book.account_id if self.book else None,
+            "account_name": self.book.account.name if self.book and self.book.account else None,
+        }
+
+
+class SystemConfig(Base):
+    """系统配置"""
+    __tablename__ = "system_config"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(50), unique=True, nullable=False)
+    value = Column(Text, nullable=True)
+    description = Column(String(200), nullable=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "key": self.key,
+            "value": self.value,
+            "description": self.description,
+        }

@@ -39,6 +39,10 @@ app = create_app()
 from scheduler.task_scheduler import task_scheduler
 task_scheduler.start()
 
+# 启动发布确认检查器
+from scheduler.confirm_checker import publish_confirm_checker
+publish_confirm_checker.start()
+
 
 @app.route('/')
 def index():

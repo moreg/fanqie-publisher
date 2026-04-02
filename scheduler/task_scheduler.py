@@ -12,7 +12,7 @@ from typing import Optional, Callable, List
 
 from sqlalchemy.orm import Session
 from database.connection import safe_session
-from database.models import PendingTask, Chapter, Book, Account, PublishLog, Schedule
+from database.models import PendingTask, Chapter, Book, Account, PublishLog, Schedule, PublishConfirm, SystemConfig
 from utils.logger import logger
 from utils.feishu import get_feishu_notifier
 from chapters.tracker import chapter_tracker
@@ -68,6 +68,37 @@ class TaskScheduler:
                     logger.info(f"飞书配置已加载: enabled={config.enabled}")
         except Exception as e:
             logger.debug(f"加载飞书配置失败: {e}")
+
+    def _get_confirm_delay_minutes(self) -> int:
+        """获取发布确认延迟时间（分钟）"""
+        try:
+            with safe_session() as db:
+                config = db.query(SystemConfig).filter_by(key="publish_confirm_delay").first()
+                if config and config.value:
+                    return int(config.value)
+        except Exception as e:
+            logger.debug(f"获取确认延迟失败: {e}")
+        return 20  # 默认20分钟
+
+    def _add_publish_confirm(self, book_id: int, chapter_id: int, fanqie_book_id: str, chapter_title: str):
+        """添加待确认的发布记录"""
+        try:
+            delay_minutes = self._get_confirm_delay_minutes()
+            confirm_after = datetime.now() + timedelta(minutes=delay_minutes)
+
+            with safe_session() as db:
+                confirm = PublishConfirm(
+                    book_id=book_id,
+                    chapter_id=chapter_id,
+                    fanqie_book_id=fanqie_book_id,
+                    chapter_title=chapter_title,
+                    status="pending",
+                    confirm_after=confirm_after
+                )
+                db.add(confirm)
+                logger.info(f"添加发布确认记录: {chapter_title}, 确认时间: {confirm_after}")
+        except Exception as e:
+            logger.error(f"添加发布确认记录失败: {e}")
 
     def start(self):
         """启动调度器"""
@@ -295,6 +326,8 @@ class TaskScheduler:
                             self._send_feishu_notification(book_name, full_chapter_title, True)
                             # 自动更新起始章节
                             self._update_schedule_start_chapter(book_id, chapter_number)
+                            # 添加发布确认记录
+                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title)
                         else:
                             chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
                             task.status = "published"
@@ -305,6 +338,8 @@ class TaskScheduler:
                             self._send_feishu_notification(book_name, full_chapter_title, True)
                             # 自动更新起始章节
                             self._update_schedule_start_chapter(book_id, chapter_number)
+                            # 添加发布确认记录
+                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title)
                     else:
                         chapter_tracker.mark_chapter_failed(chapter_id, result.message)
                         self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "failed", result.message, result.duration_ms)
