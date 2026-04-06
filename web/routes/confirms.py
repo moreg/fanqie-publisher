@@ -109,6 +109,48 @@ def register_routes(api_bp):
         finally:
             db.close()
 
+    @api_bp.route('/config/publish_confirm_enabled', methods=['GET'])
+    def get_confirm_enabled():
+        """获取发布确认功能是否启用"""
+        db = get_session()
+        try:
+            config = db.query(SystemConfig).filter_by(key="publish_confirm_enabled").first()
+            return jsonify({
+                "enabled": config.value == "true" if config and config.value else True,
+                "description": "是否启用发布确认功能"
+            })
+        finally:
+            db.close()
+
+    @api_bp.route('/config/publish_confirm_enabled', methods=['PUT'])
+    def update_confirm_enabled():
+        """更新发布确认功能启用状态"""
+        data = request.json
+        enabled = data.get('enabled', True)
+
+        db = get_session()
+        try:
+            config = db.query(SystemConfig).filter_by(key="publish_confirm_enabled").first()
+            if not config:
+                config = SystemConfig(
+                    key="publish_confirm_enabled",
+                    value="true" if enabled else "false",
+                    description="是否启用发布确认功能"
+                )
+                db.add(config)
+            else:
+                config.value = "true" if enabled else "false"
+                config.updated_at = datetime.now()
+
+            db.commit()
+            logger.info(f"更新发布确认功能: {'启用' if enabled else '禁用'}")
+            return jsonify({"success": True, "enabled": enabled})
+        except Exception as e:
+            db.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            db.close()
+
     @api_bp.route('/config/publish_confirm_delay', methods=['GET'])
     def get_confirm_delay():
         """获取发布确认延迟时间"""

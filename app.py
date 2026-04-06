@@ -43,11 +43,18 @@ task_scheduler.start()
 from scheduler.confirm_checker import publish_confirm_checker
 publish_confirm_checker.start()
 
+# 启动APScheduler定时任务调度器
+from scheduler.engine import init_scheduler, add_session_check_job, add_cleanup_job
+init_scheduler()
+add_session_check_job()
+add_cleanup_job()
+
 
 @app.route('/')
 def index():
     """首页"""
-    return render_template('index.html')
+    with open('web/templates/index.html', 'r', encoding='utf-8') as f:
+        return f.read()
 
 
 @app.route('/api/health')

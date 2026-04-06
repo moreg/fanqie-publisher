@@ -4,6 +4,8 @@
 待发布任务调度器
 """
 import asyncio
+import os
+import re
 import threading
 import time
 import random
@@ -171,10 +173,11 @@ class TaskScheduler:
             self._execute_publish(task_id, chapter_id, book_id, account_id, fanqie_book_id, file_path)
 
     def _handle_expired_tasks(self, now: datetime):
-        """处理过期任务 - 标记为失败而非删除"""
-        expired_threshold = now - timedelta(minutes=TASK_EXPIRE_MINUTES)
+        """处理过期任务 - 删除超过3分钟未执行的任务"""
+        expired_threshold = now - timedelta(minutes=3)  # 超过3分钟未执行则删除
 
         with safe_session() as db:
+            # 1. 删除超过3分钟未执行的待发布任务
             expired_tasks = db.query(PendingTask).filter(
                 PendingTask.status == "pending",
                 PendingTask.scheduled_time < expired_threshold
@@ -183,9 +186,31 @@ class TaskScheduler:
             for task in expired_tasks:
                 chapter = db.query(Chapter).filter_by(id=task.chapter_id).first()
                 title = chapter.chapter_title if chapter else f"章节{task.chapter_id}"
-                logger.warning(f"任务已过期超过{TASK_EXPIRE_MINUTES}分钟，标记为失败: ID={task.id}, 章节={title}")
-                task.status = "failed"
-                task.notes = f"任务过期（超过{TASK_EXPIRE_MINUTES}分钟未执行）"
+                logger.warning(f"任务已过期超过3分钟，删除任务: ID={task.id}, 章节={title}")
+                db.delete(task)
+
+            # 2. 删除已执行过的任务（failed, cancelled, skipped, retry_pending），保留 published 记录
+            executed_statuses = ["failed", "cancelled", "skipped", "retry_pending"]
+            executed_tasks = db.query(PendingTask).filter(
+                PendingTask.status.in_(executed_statuses)
+            ).all()
+
+            if executed_tasks:
+                for task in executed_tasks:
+                    db.delete(task)
+                logger.info(f"清理已执行过的任务: {len(executed_tasks)} 条")
+
+            # 3. 删除卡住的 publishing 任务（超过10分钟未完成）
+            stuck_threshold = now - timedelta(minutes=10)
+            stuck_tasks = db.query(PendingTask).filter(
+                PendingTask.status == "publishing",
+                PendingTask.updated_at < stuck_threshold
+            ).all()
+
+            if stuck_tasks:
+                for task in stuck_tasks:
+                    db.delete(task)
+                logger.info(f"清理卡住的publishing任务: {len(stuck_tasks)} 条")
 
     def _claim_next_task(self, now: datetime) -> Optional[tuple]:
         """声明下一个待执行任务，返回 (task_id, chapter_id, book_id) 或 None"""
@@ -229,11 +254,7 @@ class TaskScheduler:
         """验证任务数据，返回 (success, data)"""
         with safe_session(auto_commit=False) as db:
             try:
-                chapter = db.query(Chapter).filter_by(id=chapter_id).first()
-                if not chapter:
-                    self._mark_task_failed(task_id, "章节不存在", chapter_id)
-                    return (False, None)
-
+                # 获取书籍
                 book = db.query(Book).filter_by(id=book_id).first()
                 if not book:
                     self._mark_task_failed(task_id, "书籍不存在", chapter_id)
@@ -248,7 +269,27 @@ class TaskScheduler:
                     self._mark_task_failed(task_id, "未设置番茄书籍ID", chapter_id)
                     return (False, None)
 
-                return (True, (chapter.id, book.id, account.id, book.fanqie_book_id, chapter.file_path))
+                # 获取章节或从文件路径获取
+                file_path = None
+                if chapter_id:
+                    chapter = db.query(Chapter).filter_by(id=chapter_id).first()
+                    if chapter:
+                        file_path = chapter.file_path
+                else:
+                    # 从任务中获取文件路径
+                    task = db.query(PendingTask).filter_by(id=task_id).first()
+                    if task:
+                        file_path = task.chapter_file
+
+                if not file_path:
+                    self._mark_task_failed(task_id, "文件路径不存在", chapter_id)
+                    return (False, None)
+
+                if not os.path.exists(file_path):
+                    self._mark_task_failed(task_id, f"文件不存在: {file_path}", chapter_id)
+                    return (False, None)
+
+                return (True, (chapter_id, book.id, account.id, book.fanqie_book_id, file_path))
 
             except (OSError, IOError) as e:
                 logger.error(f"获取任务关联数据时发生IO错误: {e}")
@@ -259,119 +300,139 @@ class TaskScheduler:
         """执行章节发布"""
         try:
             browser_manager._run_async(
-                self._async_publish_chapter(task_id, chapter_id, account_id, fanqie_book_id, file_path)
+                self._async_publish_chapter(task_id, chapter_id, book_id, account_id, fanqie_book_id, file_path)
             )
         except Exception as e:
             logger.error(f"发布执行失败: {e}")
             self._mark_task_failed(task_id, f"发布执行失败: {e}", chapter_id)
 
-    async def _async_publish_chapter(self, task_id: int, chapter_id: int, account_id: int, fanqie_book_id: str, file_path: str):
-        """异步发布章节"""
+    async def _async_publish_chapter(self, task_id: int, chapter_id: int, book_id: int, account_id: int, fanqie_book_id: str, file_path: str):
+        """异步发布章节（按书籍加锁，实现同书串行、不同书并行）"""
         from browser.fanqie.publisher import AsyncChapterPublisher
         from browser.fanqie.exceptions import SessionExpiredException, PublishFailedException, SelectorNotFoundException
 
-        logger.info(f"异步发布章节: chapter_id={chapter_id}, account_id={account_id}")
+        logger.info(f"异步发布章节: chapter_id={chapter_id}, book_id={book_id}, account_id={account_id}")
 
-        account_lock = await browser_manager.async_get_account_lock(account_id)
-        async with account_lock:
-            context = await browser_manager._async_create_context_from_session(account_id)
-            if not context:
-                logger.error(f"无法获取账号 {account_id} 的浏览器Context")
-                self._mark_account_expired(account_id)
-                self._mark_task_failed(task_id, "无法获取浏览器上下文", chapter_id)
-                return
-
-            page = await context.new_page()
-            publisher = AsyncChapterPublisher(page)
-
-            try:
-                with safe_session(auto_commit=False) as db:
-                    chapter = db.query(Chapter).filter_by(id=chapter_id).first()
-                    chapter_title = chapter.chapter_title if chapter else "未知章节"
-                    chapter_number = chapter.chapter_number if chapter else 1
-                    book_name = chapter.book.book_name if chapter and chapter.book else "未知书籍"
-
-                # 构造完整标题（包含"第X章"前缀）供番茄网站使用
-                full_chapter_title = f"第{chapter_number}章 {chapter_title}"
-
-                chapter_tracker.mark_chapter_publishing(chapter_id)
-
-                try:
-                    content = read_file_content(file_path)
-                except (OSError, IOError, UnicodeDecodeError) as e:
-                    chapter_tracker.mark_chapter_failed(chapter_id, f"读取文件失败: {e}")
-                    self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "failed", f"读取文件失败: {e}", 0)
-                    self._mark_task_failed(task_id, f"读取文件失败: {e}", chapter_id)
-                    return
-
-                word_count = count_words(content)
-                if word_count < MIN_CHAPTER_WORD_COUNT:
-                    chapter_tracker.mark_chapter_failed(chapter_id, f"字数不足: {word_count}")
-                    self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "failed", f"字数不足: {word_count}", 0)
-                    self._mark_task_failed(task_id, f"字数不足", chapter_id)
-                    return
-
-                try:
-                    result = await publisher.publish_chapter(
-                        fanqie_book_id=fanqie_book_id,
-                        chapter_title=full_chapter_title,
-                        chapter_content=content,
-                    )
-                except SessionExpiredException:
-                    logger.error(f"账号 {account_id} Session过期")
+        # 按书籍加锁，同一本书串行发布，不同书可以并行
+        book_lock = await browser_manager.async_get_book_lock(book_id)
+        async with book_lock:
+            account_lock = await browser_manager.async_get_account_lock(account_id)
+            async with account_lock:
+                context = await browser_manager._async_create_context_from_session(account_id)
+                if not context:
+                    logger.error(f"无法获取账号 {account_id} 的浏览器Context")
                     self._mark_account_expired(account_id)
-                    self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "session_expired", "Session过期", 0)
-                    self._mark_task_failed(task_id, "Session过期", chapter_id)
-                    return
-                except (PublishFailedException, SelectorNotFoundException) as e:
-                    logger.error(f"发布失败: {e}")
-                    self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "failed", str(e), 0)
-                    self._mark_task_failed(task_id, str(e), chapter_id)
+                    self._mark_task_failed(task_id, "无法获取浏览器上下文", chapter_id)
                     return
 
-                with safe_session() as db:
-                    task = db.query(PendingTask).filter_by(id=task_id).first()
-                    if result.success:
-                        if result.already_exists:
-                            chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
-                            task.status = "published"
-                            task.notes = "章节已存在于番茄网站"
-                            self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "skipped", "章节已存在于番茄网站，同步标记为已发布", result.duration_ms)
-                            logger.info(f"章节 '{full_chapter_title}' 已存在于番茄网站，标记为已发布")
-                            # 自动更新起始章节
-                            self._update_schedule_start_chapter(book_id, chapter_number)
-                            # 添加发布确认记录（会发送飞书通知）
-                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name)
-                        else:
-                            chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
-                            task.status = "published"
-                            task.notes = "发布成功"
-                            self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "success", result.message, result.duration_ms)
-                            logger.info(f"章节发布成功: {full_chapter_title}")
-                            # 自动更新起始章节
-                            self._update_schedule_start_chapter(book_id, chapter_number)
-                            # 添加发布确认记录（会发送飞书通知）
-                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name)
-                    else:
-                        chapter_tracker.mark_chapter_failed(chapter_id, result.message)
-                        self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "failed", result.message, result.duration_ms)
-                        logger.error(f"章节发布失败: {full_chapter_title} - {result.message}")
-                        self._mark_task_failed(task_id, result.message, chapter_id)
-                        # 发布失败也添加到确认队列，通过确认失败发送飞书通知
-                        self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name, result.message)
+                page = await context.new_page()
+                publisher = AsyncChapterPublisher(page)
 
-            except asyncio.TimeoutError:
-                logger.error(f"发布超时: chapter_id={chapter_id}")
-                self._mark_task_failed(task_id, "发布超时", chapter_id)
-            except Exception as e:
-                logger.error(f"发布异常: {e}")
-                self._mark_task_failed(task_id, str(e), chapter_id)
-            finally:
                 try:
-                    await page.close()
-                    await context.close()
-                except Exception:
-                    pass
+                    import re
+                    with safe_session(auto_commit=False) as db:
+                        chapter = db.query(Chapter).filter_by(id=chapter_id).first() if chapter_id else None
+                        if chapter:
+                            chapter_title = chapter.chapter_title
+                            chapter_number = chapter.chapter_number
+                            book_name = chapter.book.book_name if chapter.book else "未知书籍"
+                        else:
+                            # 从文件名解析
+                            filename = os.path.basename(file_path)
+                            match = re.search(r'第([0-9]+)章\s*(.*)', filename)
+                            if match:
+                                chapter_number = int(match.group(1))
+                                chapter_title = match.group(2).replace('.txt', '').strip() or "正文"
+                            else:
+                                chapter_number = 1
+                                chapter_title = "正文"
+                            book = db.query(Book).filter_by(id=book_id).first()
+                            book_name = book.book_name if book else "未知书籍"
+
+                    # 构造完整标题（包含"第X章"前缀）供番茄网站使用
+                    full_chapter_title = f"第{chapter_number}章 {chapter_title}"
+
+                    if chapter_id:
+                        chapter_tracker.mark_chapter_publishing(chapter_id)
+
+                    try:
+                        content = read_file_content(file_path)
+                    except (OSError, IOError, UnicodeDecodeError) as e:
+                        if chapter_id:
+                            chapter_tracker.mark_chapter_failed(chapter_id, f"读取文件失败: {e}")
+                        self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "failed", f"读取文件失败: {e}", 0)
+                        self._mark_task_failed(task_id, f"读取文件失败: {e}", chapter_id)
+                        return
+
+                    word_count = count_words(content)
+                    if word_count < MIN_CHAPTER_WORD_COUNT:
+                        if chapter_id:
+                            chapter_tracker.mark_chapter_failed(chapter_id, f"字数不足: {word_count}")
+                        self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "failed", f"字数不足: {word_count}", 0)
+                        self._mark_task_failed(task_id, f"字数不足", chapter_id)
+                        return
+
+                    try:
+                        result = await publisher.publish_chapter(
+                            fanqie_book_id=fanqie_book_id,
+                            chapter_title=full_chapter_title,
+                            chapter_content=content,
+                        )
+                    except SessionExpiredException:
+                        logger.error(f"账号 {account_id} Session过期")
+                        self._mark_account_expired(account_id)
+                        self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "session_expired", "Session过期", 0)
+                        self._mark_task_failed(task_id, "Session过期", chapter_id)
+                        return
+                    except (PublishFailedException, SelectorNotFoundException) as e:
+                        logger.error(f"发布失败: {e}")
+                        self._log_publish(None, task_id, chapter_id, account_id, "scheduled", "failed", str(e), 0)
+                        self._mark_task_failed(task_id, str(e), chapter_id)
+                        return
+
+                    with safe_session() as db:
+                        task = db.query(PendingTask).filter_by(id=task_id).first()
+                        if result.success:
+                            if result.already_exists:
+                                chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
+                                task.status = "published"
+                                task.notes = "章节已存在于番茄网站"
+                                self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "skipped", "章节已存在于番茄网站，同步标记为已发布", result.duration_ms)
+                                logger.info(f"章节 '{full_chapter_title}' 已存在于番茄网站，标记为已发布")
+                                # 自动更新起始章节
+                                self._update_schedule_start_chapter(book_id, chapter_number)
+                                # 添加发布确认记录（会发送飞书通知）
+                                self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name)
+                            else:
+                                chapter_tracker.mark_chapter_published(chapter_id, result.fanqie_chapter_id)
+                                task.status = "published"
+                                task.notes = "发布成功"
+                                self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "success", result.message, result.duration_ms)
+                                logger.info(f"章节发布成功: {full_chapter_title}")
+                                # 自动更新起始章节
+                                self._update_schedule_start_chapter(book_id, chapter_number)
+                                # 添加发布确认记录（会发送飞书通知）
+                                self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name)
+                        else:
+                            chapter_tracker.mark_chapter_failed(chapter_id, result.message)
+                            self._log_publish(db, task_id, chapter_id, account_id, "scheduled", "failed", result.message, result.duration_ms)
+                            logger.error(f"章节发布失败: {full_chapter_title} - {result.message}")
+                            self._mark_task_failed(task_id, result.message, chapter_id)
+                            # 发布失败也添加到确认队列，通过确认失败发送飞书通知
+                            self._add_publish_confirm(book_id, chapter_id, fanqie_book_id, full_chapter_title, book_name, result.message)
+
+                except asyncio.TimeoutError:
+                    logger.error(f"发布超时: chapter_id={chapter_id}")
+                    self._mark_task_failed(task_id, "发布超时", chapter_id)
+                except Exception as e:
+                    logger.error(f"发布异常: {e}")
+                    self._mark_task_failed(task_id, str(e), chapter_id)
+                finally:
+                    try:
+                        await page.close()
+                        await context.close()
+                    except Exception:
+                        pass
 
     def _mark_account_expired(self, account_id: int):
         """标记账号过期"""
@@ -398,13 +459,14 @@ class TaskScheduler:
                     book_id = chapter.book_id
 
             if task.retry_count < MAX_RETRIES:
-                delay_seconds = random.randint(600, 1200)
-                next_time = datetime.now() + timedelta(seconds=delay_seconds)
+                # 重试时间：3分钟后
+                retry_time = datetime.now() + timedelta(minutes=3)
+                delay_seconds = 180
 
                 retry_task = PendingTask(
                     chapter_id=chapter_id,
                     book_id=book_id,
-                    scheduled_time=next_time,
+                    scheduled_time=retry_time,
                     status="pending",
                     notes=f"第{task.retry_count + 1}次重试: {error_message[:50]}",
                     retry_count=task.retry_count + 1
@@ -412,9 +474,11 @@ class TaskScheduler:
                 db.add(retry_task)
 
                 task.status = "retry_pending"
-                task.notes = f"已安排第{task.retry_count + 1}次重试 @ {next_time}"
+                task.notes = f"已安排第{task.retry_count + 1}次重试 @ {retry_time}"
+                logger.info(f"任务 {task_id} 失败，已安排第{task.retry_count + 1}次重试 @ {retry_time}")
 
-                logger.info(f"任务 {task_id} 失败，已安排第{task.retry_count + 1}次重试 @ {next_time}")
+                # 推迟所有后续章节的发布时间
+                self._delay_following_tasks(db, book_id, chapter_id, retry_time, delay_seconds)
             else:
                 task.status = "failed"
                 task.notes = f"重试{MAX_RETRIES}次后仍失败: {error_message[:100]}"
@@ -424,6 +488,49 @@ class TaskScheduler:
 
                 # 发送飞书通知（重试失败）
                 self._send_feishu_notification(None, None, False, error_message)
+
+    def _delay_following_tasks(self, db, book_id: int, failed_chapter_id: int, retry_time: datetime, delay_seconds: int):
+        """推迟同一本书后续章节的发布时间
+
+        Args:
+            db: 数据库会话
+            book_id: 书籍ID
+            failed_chapter_id: 失败的章节ID
+            retry_time: 重试时间
+            delay_seconds: 延迟秒数（3分钟）
+        """
+        try:
+            # 获取失败的章节号
+            failed_chapter = db.query(Chapter).filter_by(id=failed_chapter_id).first()
+            if not failed_chapter:
+                return
+
+            # 查找同一本书后续章节的待发布任务
+            following_tasks = db.query(PendingTask).join(Chapter).filter(
+                PendingTask.book_id == book_id,
+                PendingTask.status.in_(["pending"]),
+                Chapter.chapter_number > failed_chapter.chapter_number
+            ).all()
+
+            if not following_tasks:
+                return
+
+            # 按章节号排序
+            following_tasks.sort(key=lambda t: t.chapter.chapter_number if t.chapter else 0)
+
+            # 后续章节依次推迟，每个间隔3分钟
+            current_delay = delay_seconds  # 第一次推迟3分钟
+            for task in following_tasks:
+                old_time = task.scheduled_time
+                new_time = datetime.fromtimestamp(retry_time.timestamp() + current_delay)
+                task.scheduled_time = new_time
+                task.notes = (task.notes or "") + f" | 因第{failed_chapter.chapter_number}章失败推迟到 {new_time}"
+                logger.info(f"推迟后续任务: 章节ID={task.id}, {old_time} -> {new_time}")
+                current_delay += delay_seconds  # 每个后续任务再推后3分钟
+
+            logger.info(f"共推迟 {len(following_tasks)} 个后续章节任务")
+        except Exception as e:
+            logger.error(f"推迟后续任务时出错: {e}")
 
     def _send_feishu_notification(self, book_name: str, chapter_title: str, success: bool, error_message: str = ""):
         """发送飞书通知"""

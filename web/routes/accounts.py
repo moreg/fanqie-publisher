@@ -123,33 +123,37 @@ def sync_books_for_account(account_id: int, db):
                 books_data = await manager.get_book_list()
 
                 synced = 0
-                for book_info in books_data:
-                    fanqie_id = book_info.get('fanqie_book_id', '')
-                    if not fanqie_id:
-                        continue
+                try:
+                    for book_info in books_data:
+                        fanqie_id = book_info.get('fanqie_book_id', '')
+                        if not fanqie_id:
+                            continue
 
-                    existing = db.query(Book).filter_by(
-                        account_id=account_id,
-                        fanqie_book_id=fanqie_id
-                    ).first()
-
-                    if not existing:
-                        new_book = Book(
+                        existing = db.query(Book).filter_by(
                             account_id=account_id,
-                            fanqie_book_id=fanqie_id,
-                            book_name=book_info.get('book_name', ''),
-                            local_folder='',
-                            chapter_pattern=r"第(\d+)章\s+(.+)\.txt"
-                        )
-                        db.add(new_book)
-                        synced += 1
-                    else:
-                        existing.book_name = book_info.get('book_name', existing.book_name)
+                            fanqie_book_id=fanqie_id
+                        ).first()
 
-                if synced > 0:
+                        if not existing:
+                            new_book = Book(
+                                account_id=account_id,
+                                fanqie_book_id=fanqie_id,
+                                book_name=book_info.get('book_name', ''),
+                                local_folder='',
+                                chapter_pattern=r"第(\d+)章\s+(.+)\.txt"
+                            )
+                            db.add(new_book)
+                            synced += 1
+                        else:
+                            existing.book_name = book_info.get('book_name', existing.book_name)
+
                     db.commit()
-                logger.info(f"账号 {account_id} 同步了 {synced} 本新书籍")
-                return synced
+                    logger.info(f"账号 {account_id} 同步了 {synced} 本新书籍")
+                    return synced
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"同步书籍数据库操作失败: {e}")
+                    raise
             finally:
                 await page.close()
                 await context.close()

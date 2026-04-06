@@ -216,6 +216,16 @@ class PendingTask(Base):
     book = relationship("Book")
 
     def to_dict(self):
+        import re
+        chapter_number = None
+        if self.chapter:
+            chapter_number = self.chapter.chapter_number
+        elif self.chapter_file:
+            # 从文件名解析章节号
+            match = re.search(r'第([0-9]+)', self.chapter_file)
+            if match:
+                chapter_number = int(match.group(1))
+
         return {
             "id": self.id,
             "chapter_id": self.chapter_id,
@@ -229,7 +239,7 @@ class PendingTask(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             # 关联信息
-            "chapter_number": self.chapter.chapter_number if self.chapter else None,
+            "chapter_number": chapter_number,
             "book_name": self.book.book_name if self.book else (self.chapter.book.book_name if self.chapter and self.chapter.book else None),
             "account_id": self.book.account_id if self.book else (self.chapter.book.account_id if self.chapter and self.chapter.book else None),
             "account_name": self.book.account.name if self.book and self.book.account else (self.chapter.book.account.name if self.chapter and self.chapter.book and self.chapter.book.account else None),

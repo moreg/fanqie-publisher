@@ -161,14 +161,26 @@ def register_routes(api_bp):
                             chapter_number = len(chapters) + 1
                             chapter_title = txt_file.replace('.txt', '')
 
-                        # 查询发布状态
+                        # 查询发布状态（同时检查 Chapter 表和 PendingTask 表）
                         publish_status = 'none'
-                        success_task = db.query(PendingTask).filter(
-                            PendingTask.chapter_file == file_path,
-                            PendingTask.status == 'published'
+
+                        # 1. 先检查 Chapter 表的发布状态
+                        chapter = db.query(Chapter).filter(
+                            Chapter.book_id == book_id,
+                            Chapter.chapter_number == chapter_number
                         ).first()
-                        if success_task:
+                        if chapter and chapter.status == 'published':
                             publish_status = 'published'
+
+                        # 2. 也检查 PendingTask 表
+                        if publish_status != 'published':
+                            success_task = db.query(PendingTask).filter(
+                                PendingTask.book_id == book_id,
+                                PendingTask.chapter_id == chapter.id if chapter else None,
+                                PendingTask.status == 'published'
+                            ).first()
+                            if success_task:
+                                publish_status = 'published'
 
                         chapters.append({
                             "id": chapter_number,

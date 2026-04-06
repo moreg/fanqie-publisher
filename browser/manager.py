@@ -172,6 +172,18 @@ class AsyncBrowserManager:
                 self._account_locks[account_id] = asyncio.Lock()
             return self._account_locks[account_id]
 
+    # 书籍锁（按书籍加锁，实现同一本书串行发布）
+    _book_locks: dict[int, asyncio.Lock] = {}
+    _book_locks_lock = threading.Lock()
+
+    async def async_get_book_lock(self, book_id: int):
+        """异步获取书籍级别的锁"""
+        global_lock = await self._async_get_global_lock()
+        async with global_lock:
+            if book_id not in self._book_locks:
+                self._book_locks[book_id] = asyncio.Lock()
+            return self._book_locks[book_id]
+
     def get_session_path(self, account_id: int) -> Path:
         """获取Session文件路径"""
         return self._get_session_path(account_id)
@@ -273,14 +285,25 @@ class AsyncBrowserManager:
                     cookies_list = []
                     for part in cookies_str.split(';'):
                         part = part.strip()
-                        if '=' in part:
+                        if '=' not in part:
+                            continue
+                        try:
                             name, value = part.split('=', 1)
+                            name = name.strip()
+                            value = value.strip()
+                            # 验证 Cookie 名称格式（只允许字母、数字、下划线、连字符）
+                            if not name.replace('_', '').replace('-', '').isalnum():
+                                logger.warning(f"跳过无效的 Cookie 名称: {name}")
+                                continue
                             cookies_list.append({
-                                "name": name.strip(),
-                                "value": value.strip(),
+                                "name": name,
+                                "value": value,
                                 "domain": ".fanqienovel.com",
                                 "path": "/"
                             })
+                        except ValueError:
+                            logger.warning(f"跳过无法解析的 Cookie: {part}")
+                            continue
 
                     if cookies_list:
                         logger.info(f"从数据库加载账号 {account_id} 的 {len(cookies_list)} 个 cookies (字符串格式)")

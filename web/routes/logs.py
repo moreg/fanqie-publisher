@@ -67,3 +67,19 @@ def register_routes(api_bp):
             })
         finally:
             db.close()
+
+    @api_bp.route('/logs', methods=['DELETE'])
+    def clear_logs():
+        """清空所有发布日志"""
+        db = get_session()
+        try:
+            deleted = db.query(PublishLog).delete()
+            db.commit()
+            logger.info(f"已清空 {deleted} 条发布日志")
+            return jsonify({"success": True, "deleted": deleted})
+        except Exception as e:
+            db.rollback()
+            logger.error(f"清空日志失败: {e}")
+            return jsonify({"error": str(e)}), 500
+        finally:
+            db.close()

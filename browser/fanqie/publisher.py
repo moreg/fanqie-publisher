@@ -169,70 +169,135 @@ class AsyncChapterPublisher:
             await self._close_all_popups()
             await asyncio.sleep(1)
 
-            # 使用JavaScript获取href并导航
-            logger.info(">>> 使用JavaScript导航到发布确认页面...")
+            # 点击新建章节按钮
+            logger.info(">>> 点击新建章节按钮...")
             try:
-                result = await self.page.evaluate("""
+                # 方案1: 直接点击按钮
+                click_result = await self.page.evaluate("""
                     () => {
-                        const btn = Array.from(document.querySelectorAll('button')).find(b =>
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const newChapterBtn = buttons.find(b =>
                             (b.textContent || '').includes('新建章节')
                         );
-                        if (btn) {
-                            let el = btn.parentElement;
-                            for (let i = 0; i < 5 && el; i++) {
-                                const href = el.getAttribute && el.getAttribute('href');
-                                if (href) {
-                                    window.location.href = href;
-                                    return { success: true, href: href };
-                                }
-                                el = el.parentElement;
+                        if (newChapterBtn) {
+                            newChapterBtn.click();
+                            return { success: true, text: newChapterBtn.textContent.trim() };
+                        }
+                        return { success: false, reason: 'button not found' };
+                    }
+                """)
+                if click_result and click_result.get('success'):
+                    logger.info(f"点击新建章节按钮成功")
+                else:
+                    logger.warning(f"点击新建章节按钮失败: {click_result}")
+                    return
+
+                # 等待弹窗出现
+                logger.info(">>> 等待新建章节弹窗...")
+                await asyncio.sleep(3)
+
+                # 检查是否出现了"上传文档"弹窗
+                dialog_check = await self.page.evaluate("""
+                    () => {
+                        // 查找包含"上传文档"或"手动输入"的元素
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        for (const btn of buttons) {
+                            const text = btn.textContent || '';
+                            if (text.includes('手动输入')) {
+                                return { success: true, found: 'manual-input', text: text.trim() };
                             }
+                        }
+                        // 检查页面文本
+                        const allText = document.body.innerText;
+                        if (allText.includes('上传文档')) {
+                            return { success: true, found: 'upload' };
                         }
                         return { success: false };
                     }
                 """)
-                if result and result.get('success'):
-                    logger.info(f"JavaScript导航成功: {result.get('href')}")
-                else:
-                    logger.warning("JavaScript导航未找到href，尝试点击按钮")
-                    # 回退到点击按钮
-                    btn = self.page.get_by_role("button", name="新建章节")
-                    await btn.click()
-            except Exception as e:
-                logger.debug(f"JavaScript导航失败: {e}")
+                logger.info(f">>> 弹窗检查: {dialog_check}")
 
-            # 等待页面跳转
-            logger.info(">>> 等待页面跳转...")
-            for i in range(30):
-                await asyncio.sleep(1)
-                current_url = self.page.url
-                if "/publish" in current_url:
-                    logger.info(f">>> URL已跳转: {current_url}")
-                    break
-                if i % 5 == 0:
-                    logger.info(f">>> 等待中... ({i}/30) URL: {current_url[:60]}")
+                # 如果出现"上传文档"弹窗，点击"手动输入"
+                if dialog_check and dialog_check.get('success') and dialog_check.get('found') in ['upload', 'manual-input']:
+                    logger.info(">>> 出现上传文档弹窗，点击'手动输入'...")
+                    manual_btn_click = await self.page.evaluate("""
+                        () => {
+                            const buttons = Array.from(document.querySelectorAll('button'));
+                            for (const btn of buttons) {
+                                const text = btn.textContent || '';
+                                if (text.includes('手动输入')) {
+                                    btn.click();
+                                    return { success: true, text: text.trim() };
+                                }
+                            }
+                            return { success: false };
+                        }
+                    """)
+                    logger.info(f">>> 点击手动输入结果: {manual_btn_click}")
+                    await asyncio.sleep(3)
+
+                # 等待编辑抽屉/界面出现
+                logger.info(">>> 等待编辑界面出现...")
+                for i in range(10):
+                    drawer_check = await self.page.evaluate("""
+                        () => {
+                            // 查找抽屉中的标题输入框
+                            const inputs = document.querySelectorAll('input');
+                            for (const inp of inputs) {
+                                const placeholder = (inp.placeholder || '').toLowerCase();
+                                if (placeholder.includes('标题') || placeholder.includes('chapter')) {
+                                    const rect = inp.getBoundingClientRect();
+                                    if (rect.width > 0 && rect.height > 0) {
+                                        return { success: true, found: 'title-input', placeholder: inp.placeholder };
+                                    }
+                                }
+                            }
+                            return { success: false };
+                        }
+                    """)
+                    if drawer_check and drawer_check.get('success'):
+                        logger.info(f">>> 编辑界面已出现: {drawer_check}")
+                        break
+                    await asyncio.sleep(1)
+
+                logger.info(">>> 开始填写发布内容...")
+
+            except Exception as e:
+                logger.error(f"点击新建章节按钮失败: {e}")
+                raise
 
             # 检查是否被重定向到登录页
             if "login" in self.page.url.lower():
                 raise SessionExpiredException("Session已过期，需要重新登录")
 
-            # 等待页面加载
+            # 等待编辑界面完全加载
             await asyncio.sleep(2)
 
-            # 4a. 填写标题
+            # 4a. 填写标题（在抽屉内的编辑界面）
             logger.info(">>> 步骤4: 填写章节标题...")
             await self._fill_title_on_confirm_page(chapter_title)
 
-            # 4b. 填写正文
+            # 4b. 点击"添加正文"按钮（如果存在）
+            logger.info(">>> 步骤4b: 点击添加正文按钮...")
+            try:
+                add_btn = await self.page.wait_for_selector("button:has-text('添加正文')", timeout=3000)
+                if add_btn and await add_btn.is_visible():
+                    await add_btn.click()
+                    await asyncio.sleep(2)
+                    logger.info("已点击添加正文按钮")
+            except Exception as e:
+                logger.debug(f"点击添加正文按钮失败（可能不需要）: {e}")
+
+            # 4c. 填写正文
             logger.info(">>> 步骤5: 填写章节正文...")
             await self._fill_content_on_confirm_page(chapter_content)
 
-            # 4c. 点击确认发布
+            # 4d. 点击确认发布
             logger.info(">>> 步骤6: 点击确认发布...")
             await self._click_confirm_publish()
             await asyncio.sleep(2)
 
-            # 4d. 处理确认弹窗
+            # 4e. 处理确认弹窗
             logger.info(">>> 步骤7: 处理确认弹窗...")
             await self._handle_confirm_dialog()
 
@@ -471,7 +536,7 @@ class AsyncChapterPublisher:
         """关闭所有弹窗（教程弹窗等）"""
         from browser.fanqie.selectors import Common
 
-        # 最多尝试关闭10次弹窗（确保教程弹窗都关闭）
+        # 最多尝试关闭10次弹窗
         for attempt in range(10):
             # 先保存截图看看弹窗内容
             await self._save_debug_screenshot(f"popup_before_close_{attempt + 1}")
@@ -484,6 +549,18 @@ class AsyncChapterPublisher:
                     if el and await el.is_visible():
                         btn_text = await el.text_content()
                         btn_class = await el.get_attribute("class") or ""
+                        btn_style = await el.get_attribute("style") or ""
+
+                        # 跳过序号输入框的清除按钮（serial-icon）
+                        if 'serial-icon' in btn_class:
+                            logger.debug(f"跳过序号清除按钮")
+                            continue
+
+                        # 跳过箭头按钮
+                        if 'arrow' in btn_class.lower():
+                            logger.debug(f"跳过箭头按钮")
+                            continue
+
                         logger.info(f"发现弹窗按钮: text='{btn_text}', class='{btn_class[:50]}'")
                         await el.scroll_into_view_if_needed()
                         await asyncio.sleep(0.2)
@@ -497,9 +574,61 @@ class AsyncChapterPublisher:
                     continue
 
             if not found:
+                # 如果没有找到关闭按钮，尝试检查是否是序号弹窗
+                serial_check = await self.page.evaluate("""
+                    () => {
+                        // 检查页面上是否有"序号"相关的弹窗
+                        const bodyText = document.body.innerText;
+                        if (bodyText.includes('序号') && bodyText.includes('请输入')) {
+                            // 查找关闭按钮（通常是×或者包含close的）
+                            const closeBtn = Array.from(document.querySelectorAll('button, [role="button"], span, div')).find(el => {
+                                const cls = el.className || '';
+                                const text = el.textContent || '';
+                                const style = el.getAttribute('style') || '';
+                                // 查找可能是关闭按钮的元素
+                                return (text.trim() === '×' || text.trim() === '×' || cls.includes('close') || cls.includes('Close')) &&
+                                       !cls.includes('serial-icon');
+                            });
+                            if (closeBtn) {
+                                return { found: true, type: 'serial-popup', closeBtn: closeBtn.textContent };
+                            }
+                            return { found: true, type: 'serial-popup', closeBtn: null };
+                        }
+                        return { found: false };
+                    }
+                """)
+                if serial_check and serial_check.get('found'):
+                    logger.info(f"检测到序号弹窗: {serial_check}")
+                    # 尝试点击关闭按钮
+                    close_result = await self.page.evaluate("""
+                        () => {
+                            // 查找所有可能的关闭按钮
+                            const elements = document.querySelectorAll('button, [role="button"]');
+                            for (const el of elements) {
+                                const cls = el.className || '';
+                                const text = el.textContent || '';
+                                // 跳过序号相关按钮
+                                if (cls.includes('serial-icon') || cls.includes('serial')) continue;
+                                // 跳过箭头按钮
+                                if (text.includes('←') || text.includes('→') || text.includes('arrow')) continue;
+                                // 查找关闭按钮
+                                if (text.trim() === '×' || cls.includes('close') || cls.includes('Close')) {
+                                    el.click();
+                                    return { success: true, text: text.trim() };
+                                }
+                            }
+                            return { success: false };
+                        }
+                    """)
+                    if close_result and close_result.get('success'):
+                        logger.info(f"已关闭序号弹窗: {close_result}")
+                        await asyncio.sleep(1.5)
+                        found = True
+
+            if not found:
                 break
 
-        # 按ESC键来关闭弹窗（更可靠，不依赖分辨率）
+        # 按ESC键来关闭弹窗
         logger.info("尝试按ESC键关闭弹窗...")
         try:
             await self.page.keyboard.press("Escape")
@@ -1258,91 +1387,89 @@ class AsyncChapterPublisher:
         - 右侧：章节标题（不含序号部分）
         """
         await self._save_debug_screenshot("confirm_page_before_title")
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)  # 等待页面完全加载
 
         # 从完整标题中提取章节序号数字和实际标题
-        # 注意：番茄小说UI已有"第"和"章"字，只需填序号数字部分
         import re
         # 匹配"第X章"格式，X可以是中文数字或阿拉伯数字
         chapter_match = re.match(r'^第([零一二三四五六七八九十百千0-9]+)章\s*(.*)$', title)
         if chapter_match:
-            # 只提取序号数字部分，不包含"第"和"章"
             chapter_number = chapter_match.group(1)  # 如"三"或"3"
             chapter_title_only = chapter_match.group(2)  # 如"测试标题"
         else:
-            # 如果没有找到序号格式，序号留空，标题就是整个标题
             chapter_number = ""
             chapter_title_only = title
 
         logger.info(f">>> 解析标题: 完整='{title}', 序号='{chapter_number}', 标题='{chapter_title_only}'")
 
-        # 填写序号数字（番茄UI已有"第"和"章"，只需填中间的序号）
+        # 填写序号数字
         if chapter_number:
             logger.info(f">>> 填写章节序号: '{chapter_number}'")
             
-            # 使用JavaScript直接设置值并触发React事件
             fill_result = await self.page.evaluate("""
                 (serial) => {
-                    const inputs = document.querySelectorAll('input');
-                    let targetInput = null;
+                    // 查找所有input
+                    const inputs = Array.from(document.querySelectorAll('input'));
                     
-                    // 查找序号输入框
-                    for (let i = 0; i < inputs.length; i++) {
-                        const inp = inputs[i];
-                        if (inp.className && inp.className.includes('serial-input')) {
-                            targetInput = inp;
-                            break;
+                    // 方法1: 查找serial-input class
+                    for (const inp of inputs) {
+                        if (inp.className && inp.className.includes('serial')) {
+                            inp.focus();
+                            inp.select && inp.select();
+                            
+                            const nativeSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value'
+                            ).set;
+                            nativeSetter.call(inp, serial);
+                            
+                            const inputEvent = new Event('input', { bubbles: true });
+                            const changeEvent = new Event('change', { bubbles: true });
+                            inp.dispatchEvent(inputEvent);
+                            inp.dispatchEvent(changeEvent);
+                            
+                            return { success: true, method: 'serial-class', value: inp.value };
                         }
                     }
                     
-                    if (!targetInput) {
-                        // 回退：查找没有placeholder的input
-                        for (let i = 0; i < inputs.length; i++) {
-                            const inp = inputs[i];
-                            if (!inp.placeholder && inp.type !== 'hidden' && inp.offsetParent !== null) {
-                                targetInput = inp;
-                                break;
+                    // 方法2: 查找没有placeholder的前两个input
+                    let found = 0;
+                    for (const inp of inputs) {
+                        if (!inp.placeholder && inp.type !== 'hidden' && inp.offsetParent !== null) {
+                            if (found === 0) {
+                                inp.focus();
+                                inp.select && inp.select();
+                                
+                                const nativeSetter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype, 'value'
+                                ).set;
+                                nativeSetter.call(inp, serial);
+                                
+                                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                                
+                                return { success: true, method: 'no-placeholder', value: inp.value };
                             }
+                            found++;
                         }
                     }
                     
-                    if (targetInput) {
-                        // 聚焦
-                        targetInput.focus();
-                        
-                        // 清除现有内容
-                        targetInput.select && targetInput.select();
-                        
-                        // 使用 React 的事件触发方式
-                        const reactSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
-                        ).set;
-                        
-                        // 设置新值
-                        reactSetter.call(targetInput, serial);
-                        
-                        // 触发 React 合成事件
-                        const inputEvent = new Event('input', { bubbles: true, cancelable: true });
-                        const changeEvent = new Event('change', { bubbles: true, cancelable: true });
-                        
-                        targetInput.dispatchEvent(inputEvent);
-                        targetInput.dispatchEvent(changeEvent);
-                        
-                        // 尝试使用 React 的内部事件处理器
-                        const tracker = targetInput._valueTracker;
-                        if (tracker) {
-                            tracker.setValue('');
+                    // 方法3: 查找包含"章节"或"序号"的input
+                    for (const inp of inputs) {
+                        const placeholder = inp.placeholder || '';
+                        if (placeholder.includes('章节') || placeholder.includes('序号') || placeholder.includes('第')) {
+                            inp.focus();
+                            inp.select && inp.select();
+                            
+                            const nativeSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value'
+                            ).set;
+                            nativeSetter.call(inp, serial);
+                            
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            
+                            return { success: true, method: 'placeholder-match', value: inp.value };
                         }
-                        reactSetter.call(targetInput, serial);
-                        targetInput.dispatchEvent(inputEvent);
-                        
-                        targetInput.blur();
-                        
-                        return {
-                            success: true,
-                            value: targetInput.value,
-                            rect: targetInput.getBoundingClientRect()
-                        };
                     }
                     
                     return { success: false };
@@ -1352,30 +1479,81 @@ class AsyncChapterPublisher:
             logger.info(f">>> 序号填写结果: {fill_result}")
             await asyncio.sleep(0.3)
 
-        # 填写标题（第二个输入框，有placeholder='请输入标题'）
+        # 填写章节标题
         logger.info(f">>> 填写章节标题: '{chapter_title_only}'")
         js_result = await self.page.evaluate("""
             (title) => {
-                const inputs = document.querySelectorAll('input');
-                for (let i = 0; i < inputs.length; i++) {
-                    const inp = inputs[i];
-                    const placeholder = inp.placeholder || '';
-                    const cls = inp.className || '';
-
-                    // 查找标题输入框：placeholder='请输入标题'，class包含editor
-                    if (placeholder === '请输入标题' && cls.includes('editor')) {
+                const inputs = Array.from(document.querySelectorAll('input'));
+                
+                // 方法1: 查找placeholder包含"标题"的input
+                for (const inp of inputs) {
+                    const placeholder = (inp.placeholder || '').toLowerCase();
+                    if (placeholder.includes('标题')) {
+                        inp.focus();
+                        
                         const nativeSetter = Object.getOwnPropertyDescriptor(
                             window.HTMLInputElement.prototype, 'value'
                         ).set;
                         nativeSetter.call(inp, title);
-
+                        
                         inp.dispatchEvent(new Event('input', { bubbles: true }));
                         inp.dispatchEvent(new Event('change', { bubbles: true }));
-
-                        return { success: true, index: i, value: inp.value };
+                        
+                        return { success: true, method: 'placeholder-title', value: inp.value };
                     }
                 }
-                return { success: false };
+                
+                // 方法2: 查找有editor class的input
+                for (const inp of inputs) {
+                    const cls = inp.className || '';
+                    if (cls.includes('editor') || cls.includes('input')) {
+                        const placeholder = inp.placeholder || '';
+                        // 跳过序号输入框（通常没有placeholder或placeholder很短）
+                        if (!placeholder || placeholder.length > 3) {
+                            inp.focus();
+                            
+                            const nativeSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value'
+                            ).set;
+                            nativeSetter.call(inp, title);
+                            
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            
+                            return { success: true, method: 'editor-class', value: inp.value };
+                        }
+                    }
+                }
+                
+                // 方法3: 查找第二个没有placeholder的input
+                let count = 0;
+                for (const inp of inputs) {
+                    if (!inp.placeholder && inp.type !== 'hidden' && inp.offsetParent !== null) {
+                        count++;
+                        if (count === 2) {
+                            inp.focus();
+                            
+                            const nativeSetter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value'
+                            ).set;
+                            nativeSetter.call(inp, title);
+                            
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            
+                            return { success: true, method: 'second-input', value: inp.value };
+                        }
+                    }
+                }
+                
+                // 调试信息
+                const debug = inputs.map(inp => ({
+                    placeholder: inp.placeholder,
+                    className: inp.className,
+                    visible: inp.offsetParent !== null
+                }));
+                
+                return { success: false, debug: debug };
             }
         """, chapter_title_only)
 
@@ -1386,6 +1564,7 @@ class AsyncChapterPublisher:
     async def _fill_content_on_confirm_page(self, content: str):
         """在发布确认页面上填写章节正文"""
         await self._save_debug_screenshot("confirm_page_before_content")
+        await asyncio.sleep(2)  # 等待编辑器加载
 
         # 方法1: 使用get_by_placeholder
         try:
@@ -1401,94 +1580,78 @@ class AsyncChapterPublisher:
         except Exception as e:
             logger.debug(f"方法1失败: {e}")
 
-        # 方法2: 查找所有textarea
-        try:
-            textareas = self.page.locator("textarea")
-            count = await textareas.count()
-            logger.info(f"发布确认页面找到 {count} 个textarea")
-
-            for i in range(count):
-                el = textareas.nth(i)
-                try:
-                    visible = await el.is_visible()
-                    if not visible:
-                        continue
-
-                    placeholder = await el.get_attribute("placeholder") or ""
-                    cls = await el.get_attribute("class") or ""
-
-                    logger.info(f"textarea[{i}]: placeholder='{placeholder}', class='{cls[:40]}'")
-
-                    await el.scroll_into_view_if_needed()
-                    await el.click()
-                    await asyncio.sleep(0.3)
-                    await el.fill(content)
-                    logger.info(f"已填写正文 (方法2: textarea[{i}])")
-                    await self._save_debug_screenshot("confirm_page_after_content")
-                    return
-                except Exception as e:
-                    logger.debug(f"textarea[{i}] 失败: {e}")
-                    continue
-        except Exception as e:
-            logger.debug(f"方法2失败: {e}")
-
-        # 方法3: 使用JavaScript - 查找ProseMirror正文编辑器
+        # 方法2: 使用JavaScript - 查找ProseMirror正文编辑器（番茄小说使用此编辑器）
         try:
             js_result = await self.page.evaluate("""
                 (content) => {
-                    // 查找正文编辑器 - 使用第一个大尺寸的ProseMirror
-                    const editors = document.querySelectorAll('.ProseMirror');
+                    // 查找所有可能的编辑器元素
+                    const selectors = [
+                        '.ProseMirror',
+                        '.ql-editor',
+                        '[contenteditable="true"]',
+                        'textarea'
+                    ];
+                    
                     let targetEditor = null;
                     let maxSize = 0;
-
-                    for (let i = 0; i < editors.length; i++) {
-                        const editor = editors[i];
-                        const rect = editor.getBoundingClientRect();
-                        const size = rect.width * rect.height;
-                        const styles = window.getComputedStyle(editor);
-
-                        if (size > maxSize && rect.width > 100 && rect.height > 100 &&
-                            styles.display !== 'none' && styles.visibility !== 'hidden' &&
-                            editor.contentEditable === 'true') {
-                            maxSize = size;
-                            targetEditor = editor;
+                    
+                    for (const selector of selectors) {
+                        const editors = document.querySelectorAll(selector);
+                        for (const editor of editors) {
+                            const rect = editor.getBoundingClientRect();
+                            const size = rect.width * rect.height;
+                            
+                            // 跳过不可见的小元素
+                            if (size < 10000) continue;
+                            if (rect.width < 200 || rect.height < 100) continue;
+                            
+                            const styles = window.getComputedStyle(editor);
+                            if (styles.display === 'none' || styles.visibility === 'hidden') continue;
+                            
+                            if (size > maxSize) {
+                                maxSize = size;
+                                targetEditor = editor;
+                            }
                         }
+                        if (targetEditor) break;
                     }
 
                     if (targetEditor) {
                         targetEditor.focus();
 
-                        // 移除首行缩进样式
-                        const container = targetEditor.closest('[class*="indent"]');
-                        if (container) {
-                            container.classList.remove('indent-2');
-                        }
-
-                        // 处理内容：去除首尾空白，每行单独处理
+                        // 处理内容：去除首尾空白
                         const lines = content.split(/\\r?\\n/);
-                        const processedLines = lines.map(line => line.trim());
+                        const processedLines = lines.map(line => line.trim()).filter(line => line);
 
-                        // 如果第一行有内容，确保开头没有空格
-                        if (processedLines.length > 0 && processedLines[0]) {
-                            processedLines[0] = processedLines[0].replace(/^\\s+/, '');
-                        }
-
-                        // 用段落标签而不是br来保持格式，同时去除缩进
-                        targetEditor.innerHTML = '';
-                        processedLines.forEach((line, index) => {
-                            if (line) {
+                        // 清除现有内容
+                        if (targetEditor.tagName === 'TEXTAREA') {
+                            targetEditor.value = processedLines.join('\\n');
+                            targetEditor.dispatchEvent(new Event('input', { bubbles: true }));
+                        } else {
+                            // contentEditable 或 ProseMirror
+                            targetEditor.innerHTML = '';
+                            processedLines.forEach((line, index) => {
                                 const p = document.createElement('p');
                                 p.textContent = line;
-                                p.style.textIndent = '0';  // 确保没有首行缩进
+                                p.style.textIndent = '0';
                                 targetEditor.appendChild(p);
-                            }
-                        });
+                            });
+                            targetEditor.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
 
-                        targetEditor.dispatchEvent(new Event('input', { bubbles: true }));
-                        return { success: true, method: 'ProseMirror-paragraph' };
+                        return { success: true, method: targetEditor.tagName || 'editor', size: maxSize };
                     }
 
-                    return { success: false };
+                    // 调试信息
+                    const debug = {
+                        selectors: selectors,
+                        found: Array.from(document.querySelectorAll('.ProseMirror, .ql-editor, [contenteditable]')).map(el => ({
+                            tag: el.tagName,
+                            class: el.className,
+                            rect: el.getBoundingClientRect()
+                        }))
+                    };
+                    return { success: false, debug: debug };
                 }
             """, content)
 
@@ -1497,8 +1660,27 @@ class AsyncChapterPublisher:
                 await self._save_debug_screenshot("confirm_page_after_content")
                 return
             else:
-                # 输出调试信息
                 logger.warning(f"JavaScript方法失败: {js_result}")
+        except Exception as e:
+            logger.debug(f"方法2失败: {e}")
+
+        # 方法3: 尝试点击添加正文按钮（如果有）
+        try:
+            addBtn = await self.page.get_by_role("button", name="添加正文")
+            if await addBtn.is_visible():
+                await addBtn.click()
+                await asyncio.sleep(2)
+                
+                # 再次尝试填写
+                try:
+                    locator = self.page.get_by_placeholder("正文内容")
+                    if await locator.is_visible():
+                        await locator.fill(content)
+                        logger.info("已填写正文 (方法3: 添加正文后填写)")
+                        await self._save_debug_screenshot("confirm_page_after_content")
+                        return
+                except:
+                    pass
         except Exception as e:
             logger.debug(f"方法3失败: {e}")
 
@@ -1511,15 +1693,18 @@ class AsyncChapterPublisher:
         番茄小说的发布按钮是"下一步"，class包含publish-button
         """
         await self._save_debug_screenshot("confirm_page_before_publish")
+        await asyncio.sleep(1)
 
-        # 番茄小说的发布按钮选择器
-        # 关键：需要找到 class 包含 publish-button 的按钮
+        # 番茄小说的发布按钮选择器 - 扩展更多选择器
         publish_selectors = [
             "button.publish-button",  # 主要选择器：class包含publish-button
             "button.publish-button.auto-editor-next",  # 更精确的选择器
             "button.auto-editor-next",  # 编辑器下一步按钮
             "button:has-text('下一步')",  # 回退：文本匹配
+            "button:has-text('下一步（审核快）')",  # 新版按钮
             "[class*='publish-button']",  # 模糊匹配
+            "button.primary",  # 主要按钮
+            "button[type='submit']",  # 提交按钮
         ]
 
         for selector in publish_selectors:
@@ -1533,7 +1718,7 @@ class AsyncChapterPublisher:
 
                     logger.info(f"尝试选择器 '{selector}': visible={is_visible}, text='{btn_text}', class='{btn_class[:50] if btn_class else ''}'")
 
-                    if is_visible:
+                    if is_visible and is_enabled:
                         await el.scroll_into_view_if_needed()
                         await asyncio.sleep(0.3)
                         await el.click()
@@ -1544,23 +1729,52 @@ class AsyncChapterPublisher:
                 logger.debug(f"选择器 '{selector}' 失败: {e}")
                 continue
 
-        # 最终回退：使用JavaScript直接查找并点击
+        # 使用JavaScript查找并点击发布按钮
         logger.info("使用JavaScript查找并点击发布按钮...")
-        await self.page.evaluate("""
+        js_result = await self.page.evaluate("""
             () => {
-                const buttons = document.querySelectorAll('button');
+                // 查找所有按钮
+                const buttons = Array.from(document.querySelectorAll('button'));
+
+                // 优先查找包含publish-button class的按钮
                 for (const btn of buttons) {
                     const cls = btn.className || '';
-                    const text = btn.textContent || '';
-                    // 查找包含publish-button class的按钮
                     if (cls.includes('publish-button')) {
                         btn.click();
-                        return { success: true, text: text.trim(), class: cls };
+                        return { success: true, text: btn.textContent.trim(), class: cls };
                     }
                 }
+
+                // 回退：查找包含"下一步"的按钮
+                for (const btn of buttons) {
+                    const text = btn.textContent || '';
+                    if (text.includes('下一步')) {
+                        btn.click();
+                        return { success: true, text: text.trim(), class: btn.className };
+                    }
+                }
+
+                // 回退：查找主要的arco-btn-primary按钮
+                for (const btn of buttons) {
+                    const cls = btn.className || '';
+                    if (cls.includes('arco-btn-primary')) {
+                        btn.click();
+                        return { success: true, text: btn.textContent.trim(), class: cls };
+                    }
+                }
+
+                // 回退：查找任何enabled的primary按钮
+                for (const btn of buttons) {
+                    const cls = btn.className || '';
+                    if (cls.includes('primary') || cls.includes('btn-primary')) {
+                        btn.click();
+                        return { success: true, text: btn.textContent.trim(), class: cls };
+                    }
+                }
+
                 return { success: false };
             }
         """)
 
+        logger.info(f"JavaScript点击结果: {js_result}")
         await self._save_debug_screenshot("confirm_page_publish_clicked")
-        logger.info("已尝试点击发布按钮")
